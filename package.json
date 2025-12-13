@@ -1,0 +1,21 @@
+{
+  "name": "n8n-agent-chat-ui",
+  "version": "1.0.0",
+  "description": "Chat UI for n8n agents using AG-UI protocol and CopilotKit",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
+    "dev:server": "npm run dev --workspace=@n8n-chat/server",
+    "dev:client": "npm run dev --workspace=@n8n-chat/client",
+    "build": "npm run build --workspace=@n8n-chat/server && npm run build --workspace=@n8n-chat/client",
+    "start": "concurrently \"npm run start:server\" \"npm run start:client\"",
+    "start:server": "npm run start --workspace=@n8n-chat/server",
+    "start:client": "npm run start --workspace=@n8n-chat/client"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}
