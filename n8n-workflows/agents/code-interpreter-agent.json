@@ -11,55 +11,135 @@
     },
     {
       "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Input validation and security checks\nconst input = $input.first().json;\n\n// Validate required fields\nif (!input.task || typeof input.task !== 'string' || input.task.trim().length === 0) {\n  return {\n    json: {\n      success: false,\n      error: 'Invalid input: task is required and must be a non-empty string',\n      agentType: 'code_interpreter',\n      errorCode: 'INVALID_INPUT'\n    }\n  };\n}\n\n// Security: Block dangerous patterns\nconst dangerousPatterns = [\n  /os\\.system/i,\n  /subprocess\\./i,\n  /eval\\(/i,\n  /exec\\(/i,\n  /open\\(['\"][^'\"]*\\/(etc|proc|sys)/i,\n  /import\\s+ctypes/i,\n  /\\.__class__/,\n  /\\.__base__/,\n  /\\.__subclasses__/\n];\n\nfor (const pattern of dangerousPatterns) {\n  if (pattern.test(input.task)) {\n    return {\n      json: {\n        success: false,\n        error: 'Security violation: potentially dangerous code pattern detected',\n        agentType: 'code_interpreter',\n        errorCode: 'SECURITY_VIOLATION'\n      }\n    };\n  }\n}\n\nconst sanitizedTask = input.task.trim().slice(0, 10000); // Limit task length\n\nreturn {\n  json: {\n    task: sanitizedTask,\n    sessionId: input.sessionId || $execution.id,\n    startTime: Date.now(),\n    metadata: {\n      inputLength: sanitizedTask.length,\n      executionId: $execution.id\n    }\n  }\n};"
+      },
+      "id": "validate-input",
+      "name": "Validate Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [350, 300],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            {
+              "id": "check-valid",
+              "leftValue": "={{ !$json.error }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "equals" }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "check-input-valid",
+      "name": "Input Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [500, 300]
+    },
+    {
+      "parameters": {
         "options": {
-          "systemMessage": "You are a Code Interpreter Agent that executes Python code.\n\nCapabilities:\n- Execute Python code for calculations, data analysis, and transformations\n- Install and use common packages (pandas, numpy, matplotlib, requests, etc.)\n- Process data structures (JSON, CSV, lists, dictionaries)\n- Generate visualizations\n- Perform mathematical computations\n\nGuidelines:\n1. Write clean, efficient Python code\n2. Handle errors gracefully with try/except\n3. Return results in structured format\n4. Include helpful comments in complex code\n5. Validate inputs before processing\n\nUse the Python code execution tool to run code.\nProvide the output and any relevant files generated."
+          "systemMessage": "You are a Code Interpreter Agent that executes Python code.\n\nCapabilities:\n- Execute Python code for calculations, data analysis, and transformations\n- Use common packages: pandas, numpy, matplotlib, requests, json, csv, datetime, math, re\n- Process data structures (JSON, CSV, lists, dictionaries)\n- Generate visualizations (save to files, not display)\n- Perform mathematical computations\n\nSECURITY RULES (STRICTLY ENFORCED):\n- NEVER use os.system, subprocess, or shell commands\n- NEVER use eval() or exec() on user input\n- NEVER access /etc, /proc, /sys, or other system directories\n- NEVER import ctypes or low-level modules\n- NEVER modify system files\n- Do NOT make network requests to internal IPs (10.x, 192.168.x, 172.16-31.x)\n\nOUTPUT GUIDELINES:\n1. Write clean, efficient Python code\n2. Handle errors gracefully with try/except\n3. Return results in structured format (JSON when possible)\n4. Include helpful comments in complex code\n5. Validate inputs before processing\n6. Print final results clearly\n\nEXECUTION LIMITS:\n- Maximum execution time: 30 seconds\n- Maximum memory: 256MB\n- Maximum output: 10MB"
         }
       },
       "id": "code-agent",
       "name": "Code Agent",
       "type": "@n8n/n8n-nodes-langchain.agent",
       "typeVersion": 1.7,
-      "position": [400, 300]
+      "position": [650, 200],
+      "onError": "continueRegularOutput"
     },
     {
       "parameters": {
         "modelId": { "__rl": true, "value": "gpt-4o", "mode": "list" },
-        "options": { "temperature": 0.2 }
+        "options": {
+          "temperature": 0.2,
+          "maxTokens": 4000,
+          "timeout": 90000
+        }
       },
       "id": "code-llm",
       "name": "Code LLM",
       "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
       "typeVersion": 1,
-      "position": [400, 500]
+      "position": [650, 450],
+      "credentials": {
+        "openAiApi": {
+          "id": "OPENAI_CREDENTIAL_ID",
+          "name": "OpenAI API"
+        }
+      }
     },
     {
       "parameters": {
         "name": "execute_python",
-        "description": "Execute Python code. The code will run in an isolated environment with common packages available (pandas, numpy, matplotlib, requests, json, csv, datetime, math, re). Return print() output and any generated files.",
+        "description": "Execute Python code in a sandboxed environment. Available packages: pandas, numpy, matplotlib, requests, json, csv, datetime, math, re, statistics, collections. Returns print() output and any generated files. Max execution time: 30s.",
         "language": "python",
-        "executeCode": true
+        "executeCode": true,
+        "options": {
+          "timeout": 30000
+        }
       },
       "id": "python-tool",
       "name": "Python Execution Tool",
       "type": "@n8n/n8n-nodes-langchain.toolCode",
       "typeVersion": 1,
-      "position": [600, 500]
+      "position": [800, 450]
     },
     {
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const result = $input.first().json;\n\nreturn {\n  json: {\n    success: true,\n    agentType: 'code_interpreter',\n    output: result.output,\n    executionResult: result.executionResult || null,\n    generatedFiles: result.files || [],\n    variables: result.variables || {}\n  }\n};"
+        "jsCode": "// Format successful output\nconst input = $('Validate Input').first().json;\nconst result = $input.first().json;\n\nconst executionTime = Date.now() - (input.startTime || Date.now());\n\n// Parse execution results\nlet executionResult = null;\nlet generatedFiles = [];\nlet variables = {};\n\ntry {\n  if (result.intermediateSteps) {\n    for (const step of result.intermediateSteps) {\n      if (step.observation) {\n        // Capture execution output\n        if (typeof step.observation === 'string') {\n          executionResult = step.observation;\n        } else if (step.observation.output) {\n          executionResult = step.observation.output;\n        }\n        // Capture generated files\n        if (step.observation.files) {\n          generatedFiles = generatedFiles.concat(step.observation.files);\n        }\n      }\n    }\n  }\n  \n  // Try to extract structured data from output\n  if (result.output) {\n    const jsonMatch = result.output.match(/```json\\n([\\s\\S]*?)\\n```/);\n    if (jsonMatch) {\n      try {\n        variables = JSON.parse(jsonMatch[1]);\n      } catch (e) {}\n    }\n  }\n} catch (e) {\n  // Non-critical parsing error\n}\n\nreturn {\n  json: {\n    success: true,\n    agentType: 'code_interpreter',\n    output: result.output || 'Code executed successfully',\n    executionResult,\n    generatedFiles,\n    variables,\n    metadata: {\n      executionTime,\n      toolCalls: (result.intermediateSteps || []).length,\n      executionId: input.metadata?.executionId\n    }\n  }\n};"
       },
       "id": "format-output",
       "name": "Format Output",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [600, 300]
+      "position": [850, 200],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Handle validation/security error\nconst input = $input.first().json;\n\nreturn {\n  json: {\n    success: false,\n    agentType: 'code_interpreter',\n    error: input.error || 'Validation failed',\n    errorCode: input.errorCode || 'VALIDATION_ERROR',\n    output: null,\n    metadata: {\n      executionId: $execution.id\n    }\n  }\n};"
+      },
+      "id": "format-error",
+      "name": "Format Error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [650, 400]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "return $input.all();"
+      },
+      "id": "merge-output",
+      "name": "Merge Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1000, 300]
     }
   ],
   "connections": {
     "Execute Workflow Trigger": {
-      "main": [[{ "node": "Code Agent", "type": "main", "index": 0 }]]
+      "main": [[{ "node": "Validate Input", "type": "main", "index": 0 }]]
+    },
+    "Validate Input": {
+      "main": [[{ "node": "Input Valid?", "type": "main", "index": 0 }]]
+    },
+    "Input Valid?": {
+      "main": [
+        [{ "node": "Code Agent", "type": "main", "index": 0 }],
+        [{ "node": "Format Error", "type": "main", "index": 0 }]
+      ]
     },
     "Code Agent": {
       "main": [[{ "node": "Format Output", "type": "main", "index": 0 }]]
@@ -69,7 +149,20 @@
     },
     "Python Execution Tool": {
       "ai_tool": [[{ "node": "Code Agent", "type": "ai_tool", "index": 0 }]]
+    },
+    "Format Output": {
+      "main": [[{ "node": "Merge Output", "type": "main", "index": 0 }]]
+    },
+    "Format Error": {
+      "main": [[{ "node": "Merge Output", "type": "main", "index": 0 }]]
     }
   },
-  "settings": { "executionOrder": "v1" }
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "staticData": null,
+  "tags": ["agent", "code", "python", "production"],
+  "pinData": {}
 }

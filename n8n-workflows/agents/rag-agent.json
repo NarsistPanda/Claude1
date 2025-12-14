@@ -11,76 +11,168 @@
     },
     {
       "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Input validation for RAG query\nconst input = $input.first().json;\n\n// Validate required fields\nif (!input.query || typeof input.query !== 'string' || input.query.trim().length === 0) {\n  return {\n    json: {\n      success: false,\n      error: 'Invalid input: query is required and must be a non-empty string',\n      agentType: 'rag_search',\n      errorCode: 'INVALID_INPUT'\n    }\n  };\n}\n\n// Sanitize and prepare query for semantic search\nconst sanitizedQuery = input.query.trim()\n  .replace(/<[^>]*>/g, '') // Remove HTML\n  .slice(0, 2000); // Limit length\n\n// Determine memory type hints from query\nlet memoryTypeHint = 'semantic'; // default\nif (/past|previous|last time|before|history/i.test(sanitizedQuery)) {\n  memoryTypeHint = 'episodic';\n} else if (/how to|process|steps|procedure|workflow/i.test(sanitizedQuery)) {\n  memoryTypeHint = 'procedural';\n}\n\nreturn {\n  json: {\n    query: sanitizedQuery,\n    sessionId: input.sessionId || $execution.id,\n    memoryTypeHint,\n    startTime: Date.now(),\n    metadata: {\n      originalLength: input.query.length,\n      memoryTypeHint,\n      executionId: $execution.id\n    }\n  }\n};"
+      },
+      "id": "validate-input",
+      "name": "Validate Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [350, 300],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            {
+              "id": "check-valid",
+              "leftValue": "={{ !$json.error }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "equals" }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "check-input-valid",
+      "name": "Input Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [500, 300]
+    },
+    {
+      "parameters": {
         "options": {
-          "systemMessage": "You are a RAG (Retrieval Augmented Generation) Search Agent.\n\nCapabilities:\n- Search internal knowledge base using semantic similarity\n- Retrieve relevant documents and context\n- Find past conversations and decisions\n- Locate procedural knowledge and patterns\n- Access domain-specific information\n\nMemory Types Available:\n1. Semantic Memory - Facts, knowledge, domain info\n2. Episodic Memory - Past sessions, conversations\n3. Procedural Memory - Patterns, workflows, best practices\n\nGuidelines:\n1. Formulate queries that capture semantic meaning\n2. Search across multiple memory types when appropriate\n3. Rank and filter results by relevance\n4. Provide context about source and recency\n5. Note confidence in retrieved information\n\nReturn the most relevant information with source citations."
+          "systemMessage": "You are a RAG (Retrieval Augmented Generation) Search Agent.\n\nYour role is to search the internal knowledge base and retrieve relevant information.\n\nMEMORY TYPES:\n1. **Semantic Memory** - Facts, domain knowledge, documentation\n   - Use for: \"What is...\", \"Explain...\", \"Define...\"\n   \n2. **Episodic Memory** - Past sessions, conversations, decisions\n   - Use for: \"What did we discuss...\", \"Previously...\", \"Last time...\"\n   \n3. **Procedural Memory** - Patterns, workflows, best practices\n   - Use for: \"How to...\", \"Process for...\", \"Steps to...\"\n\nSEARCH STRATEGY:\n1. Analyze query to determine memory type(s) needed\n2. Formulate semantic search query\n3. Search knowledge base\n4. Rank results by relevance\n5. Synthesize answer from retrieved context\n\nOUTPUT FORMAT:\n```\n## Answer\n[Direct answer using retrieved information]\n\n## Source Documents\n1. [Document title/ID] - Relevance: X%\n   Key excerpt: \"...\"\n\n2. [Document title/ID] - Relevance: X%\n   Key excerpt: \"...\"\n\n## Confidence\n[High/Medium/Low] - [Explanation]\n\n## Related Topics\n- [Suggested related queries]\n```\n\nGUIDELINES:\n- Always cite source documents\n- If no relevant results found, say so clearly\n- Note when information may be outdated\n- Suggest follow-up queries if partial match"
         }
       },
       "id": "rag-agent",
       "name": "RAG Agent",
       "type": "@n8n/n8n-nodes-langchain.agent",
       "typeVersion": 1.7,
-      "position": [400, 300]
+      "position": [650, 200],
+      "onError": "continueRegularOutput"
     },
     {
       "parameters": {
         "modelId": { "__rl": true, "value": "gpt-4o-mini", "mode": "list" },
-        "options": { "temperature": 0.2 }
+        "options": {
+          "temperature": 0.2,
+          "maxTokens": 2000,
+          "timeout": 60000
+        }
       },
       "id": "rag-llm",
       "name": "RAG LLM",
       "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
       "typeVersion": 1,
-      "position": [400, 500]
+      "position": [650, 450],
+      "credentials": {
+        "openAiApi": {
+          "id": "OPENAI_CREDENTIAL_ID",
+          "name": "OpenAI API"
+        }
+      }
     },
     {
       "parameters": {
         "name": "search_knowledge_base",
-        "description": "Search the semantic knowledge base. Input is a natural language query. Returns relevant documents with similarity scores.",
+        "description": "Search the semantic knowledge base using vector similarity. Input is a natural language query. Returns relevant documents with similarity scores. Best for finding related information, past decisions, and domain knowledge.",
         "topK": 5
       },
       "id": "vector-search-tool",
       "name": "Vector Store Tool",
       "type": "@n8n/n8n-nodes-langchain.toolVectorStore",
       "typeVersion": 1,
-      "position": [550, 500]
+      "position": [750, 450]
     },
     {
       "parameters": {
-        "qdrantCollection": { "__rl": true, "value": "agent_long_term_memory", "mode": "list" },
+        "qdrantCollection": "={{ $env.QDRANT_COLLECTION || 'agent_long_term_memory' }}",
+        "qdrantUrl": "={{ $env.QDRANT_URL || 'http://localhost:6333' }}",
         "options": {}
       },
       "id": "qdrant-store",
       "name": "Qdrant Vector Store",
       "type": "@n8n/n8n-nodes-langchain.vectorStoreQdrant",
       "typeVersion": 1,
-      "position": [550, 650]
+      "position": [750, 600],
+      "credentials": {
+        "qdrantApi": {
+          "id": "QDRANT_CREDENTIAL_ID",
+          "name": "Qdrant"
+        }
+      }
     },
     {
       "parameters": {
         "model": "text-embedding-3-small",
-        "options": {}
+        "options": {
+          "dimensions": 1536
+        }
       },
       "id": "embeddings",
       "name": "OpenAI Embeddings",
       "type": "@n8n/n8n-nodes-langchain.embeddingsOpenAi",
       "typeVersion": 1,
-      "position": [700, 650]
+      "position": [900, 600],
+      "credentials": {
+        "openAiApi": {
+          "id": "OPENAI_CREDENTIAL_ID",
+          "name": "OpenAI API"
+        }
+      }
     },
     {
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const result = $input.first().json;\n\nreturn {\n  json: {\n    success: true,\n    agentType: 'rag_search',\n    output: result.output,\n    retrievedDocuments: result.documents || [],\n    relevanceScores: result.scores || [],\n    memoryType: result.memoryType || 'semantic',\n    queryEmbedding: result.embedding || null\n  }\n};"
+        "jsCode": "// Format RAG output with retrieved documents\nconst input = $('Validate Input').first().json;\nconst result = $input.first().json;\n\nconst executionTime = Date.now() - (input.startTime || Date.now());\n\n// Extract retrieved documents and scores\nlet retrievedDocuments = [];\nlet relevanceScores = [];\n\ntry {\n  if (result.intermediateSteps) {\n    for (const step of result.intermediateSteps) {\n      if (step.observation) {\n        // Parse vector search results\n        const obs = typeof step.observation === 'string'\n          ? step.observation\n          : step.observation;\n        \n        // Try to extract document info\n        if (typeof obs === 'object' && obs.documents) {\n          for (const doc of obs.documents) {\n            retrievedDocuments.push({\n              id: doc.id || doc.metadata?.id,\n              content: doc.pageContent || doc.content,\n              metadata: doc.metadata || {},\n              score: doc.score\n            });\n            if (doc.score) {\n              relevanceScores.push(doc.score);\n            }\n          }\n        } else if (Array.isArray(obs)) {\n          // Array of results\n          for (const item of obs) {\n            if (item.pageContent || item.content) {\n              retrievedDocuments.push({\n                id: item.id || item.metadata?.id,\n                content: item.pageContent || item.content,\n                metadata: item.metadata || {},\n                score: item.score\n              });\n              if (item.score) {\n                relevanceScores.push(item.score);\n              }\n            }\n          }\n        }\n      }\n    }\n  }\n} catch (e) {\n  // Non-critical parsing error\n}\n\n// Calculate average relevance\nconst avgRelevance = relevanceScores.length > 0\n  ? relevanceScores.reduce((a, b) => a + b, 0) / relevanceScores.length\n  : null;\n\nreturn {\n  json: {\n    success: true,\n    agentType: 'rag_search',\n    output: result.output || 'Search completed',\n    retrievedDocuments,\n    relevanceScores,\n    averageRelevance: avgRelevance,\n    memoryType: input.memoryTypeHint,\n    documentCount: retrievedDocuments.length,\n    metadata: {\n      executionTime,\n      toolCalls: (result.intermediateSteps || []).length,\n      queryLength: input.query.length,\n      executionId: input.metadata?.executionId\n    }\n  }\n};"
       },
       "id": "format-output",
       "name": "Format Output",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [600, 300]
+      "position": [850, 200],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Handle validation error\nconst input = $input.first().json;\n\nreturn {\n  json: {\n    success: false,\n    agentType: 'rag_search',\n    error: input.error || 'Validation failed',\n    errorCode: input.errorCode || 'VALIDATION_ERROR',\n    output: null,\n    retrievedDocuments: [],\n    metadata: {\n      executionId: $execution.id\n    }\n  }\n};"
+      },
+      "id": "format-error",
+      "name": "Format Error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [650, 400]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "return $input.all();"
+      },
+      "id": "merge-output",
+      "name": "Merge Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1000, 300]
     }
   ],
   "connections": {
     "Execute Workflow Trigger": {
-      "main": [[{ "node": "RAG Agent", "type": "main", "index": 0 }]]
+      "main": [[{ "node": "Validate Input", "type": "main", "index": 0 }]]
+    },
+    "Validate Input": {
+      "main": [[{ "node": "Input Valid?", "type": "main", "index": 0 }]]
+    },
+    "Input Valid?": {
+      "main": [
+        [{ "node": "RAG Agent", "type": "main", "index": 0 }],
+        [{ "node": "Format Error", "type": "main", "index": 0 }]
+      ]
     },
     "RAG Agent": {
       "main": [[{ "node": "Format Output", "type": "main", "index": 0 }]]
@@ -96,7 +188,20 @@
     },
     "OpenAI Embeddings": {
       "ai_embedding": [[{ "node": "Qdrant Vector Store", "type": "ai_embedding", "index": 0 }]]
+    },
+    "Format Output": {
+      "main": [[{ "node": "Merge Output", "type": "main", "index": 0 }]]
+    },
+    "Format Error": {
+      "main": [[{ "node": "Merge Output", "type": "main", "index": 0 }]]
     }
   },
-  "settings": { "executionOrder": "v1" }
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "staticData": null,
+  "tags": ["agent", "rag", "vector", "production"],
+  "pinData": {}
 }

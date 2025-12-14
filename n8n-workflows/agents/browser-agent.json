@@ -11,52 +11,134 @@
     },
     {
       "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Input validation and preprocessing\nconst input = $input.first().json;\n\n// Validate required fields\nif (!input.task || typeof input.task !== 'string' || input.task.trim().length === 0) {\n  return {\n    json: {\n      success: false,\n      error: 'Invalid input: task is required and must be a non-empty string',\n      agentType: 'browser',\n      errorCode: 'INVALID_INPUT'\n    }\n  };\n}\n\n// Sanitize and prepare input\nconst sanitizedTask = input.task.trim().slice(0, 5000); // Limit task length\n\nreturn {\n  json: {\n    task: sanitizedTask,\n    sessionId: input.sessionId || $execution.id,\n    startTime: Date.now(),\n    metadata: {\n      inputLength: sanitizedTask.length,\n      executionId: $execution.id\n    }\n  }\n};"
+      },
+      "id": "validate-input",
+      "name": "Validate Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [350, 300],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            {
+              "id": "check-valid",
+              "leftValue": "={{ !$json.error }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "equals" }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "check-input-valid",
+      "name": "Input Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [500, 300]
+    },
+    {
+      "parameters": {
         "options": {
-          "systemMessage": "You are a Browser Automation Agent with Playwright MCP capabilities.\n\nYou can perform web automation tasks including:\n- Navigate to URLs\n- Click elements using selectors\n- Fill forms and input fields\n- Take screenshots\n- Extract text and data from pages\n- Wait for elements to load\n- Handle JavaScript-rendered content\n\nUse the playwright MCP tools available to accomplish the task.\nBe precise with selectors and handle potential errors gracefully.\n\nAfter completing the task, provide a summary of what was accomplished and any data extracted."
+          "systemMessage": "You are a Browser Automation Agent with Playwright MCP capabilities.\n\nYou can perform web automation tasks including:\n- Navigate to URLs\n- Click elements using selectors\n- Fill forms and input fields\n- Take screenshots\n- Extract text and data from pages\n- Wait for elements to load\n- Handle JavaScript-rendered content\n\nSECURITY GUIDELINES:\n- Never navigate to file:// URLs\n- Do not execute arbitrary JavaScript from user input\n- Respect robots.txt when scraping\n- Do not store or transmit credentials\n\nERROR HANDLING:\n- If an element is not found, wait up to 10 seconds before failing\n- Take a screenshot before reporting failure for debugging\n- Provide detailed error messages with selectors tried\n\nOUTPUT FORMAT:\n- Always include a summary of actions taken\n- Report any data extracted in structured JSON\n- Include screenshot paths if taken\n- Note any warnings or potential issues"
         }
       },
       "id": "browser-agent",
       "name": "Browser Agent",
       "type": "@n8n/n8n-nodes-langchain.agent",
       "typeVersion": 1.7,
-      "position": [400, 300]
+      "position": [650, 200],
+      "onError": "continueRegularOutput"
     },
     {
       "parameters": {
         "modelId": { "__rl": true, "value": "gpt-4o", "mode": "list" },
-        "options": { "temperature": 0.3 }
+        "options": {
+          "temperature": 0.3,
+          "maxTokens": 4000,
+          "timeout": 120000
+        }
       },
       "id": "browser-llm",
       "name": "Browser LLM",
       "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
       "typeVersion": 1,
-      "position": [400, 500]
+      "position": [650, 450],
+      "credentials": {
+        "openAiApi": {
+          "id": "OPENAI_CREDENTIAL_ID",
+          "name": "OpenAI API"
+        }
+      }
     },
     {
       "parameters": {
-        "serverUrl": "={{ $env.PLAYWRIGHT_MCP_URL || 'http://localhost:3002' }}"
+        "serverUrl": "={{ $env.PLAYWRIGHT_MCP_URL || 'http://playwright-mcp:3000' }}",
+        "options": {
+          "timeout": 90000
+        }
       },
       "id": "playwright-mcp",
       "name": "Playwright MCP",
       "type": "@n8n/n8n-nodes-langchain.toolMcp",
       "typeVersion": 1,
-      "position": [600, 500]
+      "position": [800, 450],
+      "notesInFlow": true,
+      "notes": "Docker: docker run -p 3000:3000 mcr.microsoft.com/playwright/mcp"
     },
     {
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const result = $input.first().json;\n\nreturn {\n  json: {\n    success: true,\n    agentType: 'browser',\n    output: result.output,\n    screenshots: result.screenshots || [],\n    extractedData: result.extractedData || {},\n    url: result.lastUrl || null\n  }\n};"
+        "jsCode": "// Format successful output with comprehensive metadata\nconst input = $('Validate Input').first().json;\nconst result = $input.first().json;\n\nconst executionTime = Date.now() - (input.startTime || Date.now());\n\n// Extract structured data from agent output\nlet extractedData = {};\nlet screenshots = [];\nlet lastUrl = null;\n\ntry {\n  // Try to parse structured output from agent\n  if (result.output) {\n    const jsonMatch = result.output.match(/\\{[\\s\\S]*\\}/);\n    if (jsonMatch) {\n      const parsed = JSON.parse(jsonMatch[0]);\n      extractedData = parsed.data || parsed.extractedData || {};\n      screenshots = parsed.screenshots || [];\n      lastUrl = parsed.url || parsed.lastUrl || null;\n    }\n  }\n  \n  // Extract from intermediate steps\n  if (result.intermediateSteps) {\n    for (const step of result.intermediateSteps) {\n      if (step.observation) {\n        if (step.observation.screenshot) {\n          screenshots.push(step.observation.screenshot);\n        }\n        if (step.observation.url) {\n          lastUrl = step.observation.url;\n        }\n      }\n    }\n  }\n} catch (e) {\n  // Non-critical parsing error\n}\n\nreturn {\n  json: {\n    success: true,\n    agentType: 'browser',\n    output: result.output || 'Task completed',\n    screenshots,\n    extractedData,\n    url: lastUrl,\n    metadata: {\n      executionTime,\n      toolCalls: (result.intermediateSteps || []).length,\n      executionId: input.metadata?.executionId\n    }\n  }\n};"
       },
       "id": "format-output",
       "name": "Format Output",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [600, 300]
+      "position": [850, 200],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Handle error output\nconst input = $input.first().json;\n\nreturn {\n  json: {\n    success: false,\n    agentType: 'browser',\n    error: input.error || 'Validation failed',\n    errorCode: input.errorCode || 'VALIDATION_ERROR',\n    output: null,\n    metadata: {\n      executionId: $execution.id\n    }\n  }\n};"
+      },
+      "id": "format-error",
+      "name": "Format Error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [650, 400]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Merge success and error outputs\nconst items = $input.all();\nreturn items;"
+      },
+      "id": "merge-output",
+      "name": "Merge Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1000, 300]
     }
   ],
   "connections": {
     "Execute Workflow Trigger": {
-      "main": [[{ "node": "Browser Agent", "type": "main", "index": 0 }]]
+      "main": [[{ "node": "Validate Input", "type": "main", "index": 0 }]]
+    },
+    "Validate Input": {
+      "main": [[{ "node": "Input Valid?", "type": "main", "index": 0 }]]
+    },
+    "Input Valid?": {
+      "main": [
+        [{ "node": "Browser Agent", "type": "main", "index": 0 }],
+        [{ "node": "Format Error", "type": "main", "index": 0 }]
+      ]
     },
     "Browser Agent": {
       "main": [[{ "node": "Format Output", "type": "main", "index": 0 }]]
@@ -66,7 +148,20 @@
     },
     "Playwright MCP": {
       "ai_tool": [[{ "node": "Browser Agent", "type": "ai_tool", "index": 0 }]]
+    },
+    "Format Output": {
+      "main": [[{ "node": "Merge Output", "type": "main", "index": 0 }]]
+    },
+    "Format Error": {
+      "main": [[{ "node": "Merge Output", "type": "main", "index": 0 }]]
     }
   },
-  "settings": { "executionOrder": "v1" }
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "staticData": null,
+  "tags": ["agent", "browser", "playwright", "production"],
+  "pinData": {}
 }

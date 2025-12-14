@@ -11,92 +11,184 @@
     },
     {
       "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Input validation and preparation\nconst input = $input.first().json;\n\n// Validate required fields\nif (!input.topic || typeof input.topic !== 'string' || input.topic.trim().length === 0) {\n  return {\n    json: {\n      success: false,\n      error: 'Invalid input: topic is required and must be a non-empty string',\n      agentType: 'deep_research',\n      errorCode: 'INVALID_INPUT'\n    }\n  };\n}\n\n// Limit topic length for reasonable research scope\nconst sanitizedTopic = input.topic.trim().slice(0, 1000);\n\n// Estimate research complexity\nconst wordCount = sanitizedTopic.split(/\\s+/).length;\nconst complexity = wordCount > 50 ? 'high' : (wordCount > 20 ? 'medium' : 'low');\n\nreturn {\n  json: {\n    topic: sanitizedTopic,\n    sessionId: input.sessionId || $execution.id,\n    startTime: Date.now(),\n    complexity,\n    metadata: {\n      originalLength: input.topic.length,\n      wordCount,\n      complexity,\n      executionId: $execution.id\n    }\n  }\n};"
+      },
+      "id": "validate-input",
+      "name": "Validate Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [350, 300],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            {
+              "id": "check-valid",
+              "leftValue": "={{ !$json.error }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "equals" }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "check-input-valid",
+      "name": "Input Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [500, 300]
+    },
+    {
+      "parameters": {
         "options": {
-          "systemMessage": "You are a Deep Research Agent specialized in comprehensive research tasks.\n\nCapabilities:\n- Conduct multi-source research on complex topics\n- Synthesize information from various sources\n- Identify contradictions and consensus across sources\n- Provide detailed analysis with citations\n- Create structured research reports\n\nResearch Process:\n1. Understand the research question fully\n2. Identify key aspects to investigate\n3. Search multiple sources for each aspect\n4. Cross-reference and verify information\n5. Synthesize findings into coherent analysis\n6. Note confidence levels and source quality\n\nOutput Format:\n- Executive Summary\n- Key Findings (with sources)\n- Detailed Analysis\n- Confidence Assessment\n- Recommendations for further research\n\nUse all available tools to conduct thorough research."
+          "systemMessage": "You are a Deep Research Agent specialized in comprehensive, multi-source research tasks.\n\nRESEARCH METHODOLOGY:\n1. UNDERSTAND: Fully comprehend the research question\n   - Identify key concepts and terms\n   - Determine scope and boundaries\n   - List aspects to investigate\n\n2. PLAN: Create a structured research plan\n   - Use think_step_by_step tool first\n   - Identify 3-5 key aspects to research\n   - Prioritize most important areas\n\n3. GATHER: Collect information systematically\n   - Search multiple sources for each aspect\n   - Use Wikipedia for background/definitions\n   - Use web search for current information\n   - Fetch specific articles for depth\n\n4. VERIFY: Cross-reference critical facts\n   - Look for consensus across sources\n   - Note contradictions\n   - Assess source reliability\n\n5. SYNTHESIZE: Create coherent analysis\n   - Combine findings logically\n   - Draw reasoned conclusions\n   - Note confidence levels\n\nOUTPUT FORMAT:\n```\n## Executive Summary\n[2-3 sentence overview]\n\n## Key Findings\n1. [Finding with source]\n2. [Finding with source]\n...\n\n## Detailed Analysis\n[Organized by topic]\n\n## Source Assessment\n- High confidence: [list]\n- Medium confidence: [list]\n- Requires verification: [list]\n\n## Limitations & Further Research\n[What couldn't be determined, suggestions]\n```\n\nLIMITS:\n- Maximum 10 tool calls per research\n- Focus on authoritative sources\n- Note when information is outdated or limited"
         }
       },
       "id": "research-agent",
       "name": "Research Agent",
       "type": "@n8n/n8n-nodes-langchain.agent",
       "typeVersion": 1.7,
-      "position": [400, 300]
+      "position": [650, 200],
+      "onError": "continueRegularOutput"
     },
     {
       "parameters": {
         "modelId": { "__rl": true, "value": "gpt-4o", "mode": "list" },
-        "options": { "temperature": 0.4 }
+        "options": {
+          "temperature": 0.4,
+          "maxTokens": 6000,
+          "timeout": 180000
+        }
       },
       "id": "research-llm",
       "name": "Research LLM",
       "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
       "typeVersion": 1,
-      "position": [400, 550]
-    },
-    {
-      "parameters": {
-        "name": "web_search",
-        "description": "Search the web for current information"
-      },
-      "id": "serpapi-tool",
-      "name": "SerpAPI Tool",
-      "type": "@n8n/n8n-nodes-langchain.toolSerpApi",
-      "typeVersion": 1,
-      "position": [500, 550]
-    },
-    {
-      "parameters": {
-        "name": "wikipedia",
-        "description": "Search Wikipedia for background and encyclopedic information"
-      },
-      "id": "wikipedia-tool",
-      "name": "Wikipedia Tool",
-      "type": "@n8n/n8n-nodes-langchain.toolWikipedia",
-      "typeVersion": 1,
-      "position": [600, 550]
-    },
-    {
-      "parameters": {
-        "name": "fetch_webpage",
-        "description": "Fetch and extract content from a specific URL. Use this to read full articles or documentation pages."
-      },
-      "id": "http-tool",
-      "name": "HTTP Request Tool",
-      "type": "@n8n/n8n-nodes-langchain.toolHttpRequest",
-      "typeVersion": 1,
-      "position": [700, 550]
+      "position": [650, 500],
+      "credentials": {
+        "openAiApi": {
+          "id": "OPENAI_CREDENTIAL_ID",
+          "name": "OpenAI API"
+        }
+      }
     },
     {
       "parameters": {
         "name": "think_step_by_step",
-        "description": "Use this tool to think through complex research questions step by step before searching."
+        "description": "Use this tool FIRST to plan your research approach. Break down the research question into 3-5 key aspects to investigate. Output your thinking process and research plan."
       },
       "id": "thinking-tool",
       "name": "Think Tool",
       "type": "@n8n/n8n-nodes-langchain.toolThink",
       "typeVersion": 1,
-      "position": [800, 550]
+      "position": [700, 500]
+    },
+    {
+      "parameters": {
+        "name": "web_search",
+        "description": "Search the web for current information. Returns search results with titles, snippets, and URLs. Best for current events, news, specific facts, and recent developments."
+      },
+      "id": "serpapi-tool",
+      "name": "SerpAPI Tool",
+      "type": "@n8n/n8n-nodes-langchain.toolSerpApi",
+      "typeVersion": 1,
+      "position": [800, 500],
+      "credentials": {
+        "serpApi": {
+          "id": "SERPAPI_CREDENTIAL_ID",
+          "name": "SerpAPI"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "name": "wikipedia",
+        "description": "Search Wikipedia for background information, definitions, historical context, and encyclopedic knowledge. Best for understanding concepts and established facts.",
+        "options": {
+          "topK": 3
+        }
+      },
+      "id": "wikipedia-tool",
+      "name": "Wikipedia Tool",
+      "type": "@n8n/n8n-nodes-langchain.toolWikipedia",
+      "typeVersion": 1,
+      "position": [900, 500]
+    },
+    {
+      "parameters": {
+        "name": "fetch_webpage",
+        "description": "Fetch and extract content from a specific URL. Use this to read full articles, documentation pages, or detailed sources. Input: the URL to fetch.",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "http-tool",
+      "name": "HTTP Request Tool",
+      "type": "@n8n/n8n-nodes-langchain.toolHttpRequest",
+      "typeVersion": 1,
+      "position": [1000, 500]
     },
     {
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const result = $input.first().json;\n\nreturn {\n  json: {\n    success: true,\n    agentType: 'deep_research',\n    output: result.output,\n    sources: result.sources || [],\n    researchDepth: 'comprehensive',\n    topicsExplored: result.topicsExplored || [],\n    confidenceLevel: result.confidenceLevel || 'medium'\n  }\n};"
+        "jsCode": "// Format research output with comprehensive metadata\nconst input = $('Validate Input').first().json;\nconst result = $input.first().json;\n\nconst executionTime = Date.now() - (input.startTime || Date.now());\n\n// Extract sources and topics explored\nlet sources = [];\nlet topicsExplored = [];\nlet thinkingOutput = null;\n\ntry {\n  if (result.intermediateSteps) {\n    for (const step of result.intermediateSteps) {\n      // Capture thinking output\n      if (step.action?.tool === 'think_step_by_step' && step.observation) {\n        thinkingOutput = step.observation;\n      }\n      \n      // Track topics from search queries\n      if (step.action?.toolInput) {\n        const input = step.action.toolInput;\n        if (!topicsExplored.includes(input)) {\n          topicsExplored.push(input);\n        }\n      }\n      \n      // Extract sources\n      if (step.observation) {\n        const obs = typeof step.observation === 'string'\n          ? step.observation\n          : JSON.stringify(step.observation);\n        \n        // Extract URLs\n        const urlRegex = /https?:\\/\\/[^\\s<>\"'\\]\\)]+/g;\n        const urls = obs.match(urlRegex) || [];\n        for (const url of urls) {\n          if (!sources.find(s => s.url === url)) {\n            let type = 'web';\n            if (url.includes('wikipedia')) type = 'wikipedia';\n            else if (url.includes('.gov')) type = 'government';\n            else if (url.includes('.edu')) type = 'academic';\n            sources.push({ url, type });\n          }\n        }\n      }\n    }\n  }\n} catch (e) {\n  // Non-critical parsing error\n}\n\n// Assess confidence based on source diversity\nlet confidenceLevel = 'low';\nconst sourceTypes = [...new Set(sources.map(s => s.type))];\nif (sourceTypes.length >= 3 && sources.length >= 5) {\n  confidenceLevel = 'high';\n} else if (sourceTypes.length >= 2 && sources.length >= 3) {\n  confidenceLevel = 'medium';\n}\n\nreturn {\n  json: {\n    success: true,\n    agentType: 'deep_research',\n    output: result.output || 'Research completed',\n    sources,\n    researchDepth: 'comprehensive',\n    topicsExplored,\n    confidenceLevel,\n    thinkingOutput,\n    metadata: {\n      executionTime,\n      toolCalls: (result.intermediateSteps || []).length,\n      sourceCount: sources.length,\n      topicCount: topicsExplored.length,\n      complexity: input.complexity,\n      executionId: input.metadata?.executionId\n    }\n  }\n};"
       },
       "id": "format-output",
       "name": "Format Output",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [600, 300]
+      "position": [850, 200],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Handle validation error\nconst input = $input.first().json;\n\nreturn {\n  json: {\n    success: false,\n    agentType: 'deep_research',\n    error: input.error || 'Validation failed',\n    errorCode: input.errorCode || 'VALIDATION_ERROR',\n    output: null,\n    sources: [],\n    confidenceLevel: 'none',\n    metadata: {\n      executionId: $execution.id\n    }\n  }\n};"
+      },
+      "id": "format-error",
+      "name": "Format Error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [650, 400]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "return $input.all();"
+      },
+      "id": "merge-output",
+      "name": "Merge Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1000, 300]
     }
   ],
   "connections": {
     "Execute Workflow Trigger": {
-      "main": [[{ "node": "Research Agent", "type": "main", "index": 0 }]]
+      "main": [[{ "node": "Validate Input", "type": "main", "index": 0 }]]
+    },
+    "Validate Input": {
+      "main": [[{ "node": "Input Valid?", "type": "main", "index": 0 }]]
+    },
+    "Input Valid?": {
+      "main": [
+        [{ "node": "Research Agent", "type": "main", "index": 0 }],
+        [{ "node": "Format Error", "type": "main", "index": 0 }]
+      ]
     },
     "Research Agent": {
       "main": [[{ "node": "Format Output", "type": "main", "index": 0 }]]
     },
     "Research LLM": {
       "ai_languageModel": [[{ "node": "Research Agent", "type": "ai_languageModel", "index": 0 }]]
+    },
+    "Think Tool": {
+      "ai_tool": [[{ "node": "Research Agent", "type": "ai_tool", "index": 0 }]]
     },
     "SerpAPI Tool": {
       "ai_tool": [[{ "node": "Research Agent", "type": "ai_tool", "index": 0 }]]
@@ -107,9 +199,19 @@
     "HTTP Request Tool": {
       "ai_tool": [[{ "node": "Research Agent", "type": "ai_tool", "index": 0 }]]
     },
-    "Think Tool": {
-      "ai_tool": [[{ "node": "Research Agent", "type": "ai_tool", "index": 0 }]]
+    "Format Output": {
+      "main": [[{ "node": "Merge Output", "type": "main", "index": 0 }]]
+    },
+    "Format Error": {
+      "main": [[{ "node": "Merge Output", "type": "main", "index": 0 }]]
     }
   },
-  "settings": { "executionOrder": "v1" }
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "staticData": null,
+  "tags": ["agent", "research", "deep", "production"],
+  "pinData": {}
 }

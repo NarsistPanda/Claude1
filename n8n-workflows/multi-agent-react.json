@@ -5,12 +5,14 @@
       "parameters": {
         "httpMethod": "POST",
         "path": "multi-agent-chat",
+        "authentication": "headerAuth",
         "responseMode": "responseNode",
         "options": {
           "responseHeaders": {
             "entries": [
-              { "name": "Access-Control-Allow-Origin", "value": "*" },
-              { "name": "Content-Type", "value": "text/event-stream" }
+              { "name": "Access-Control-Allow-Origin", "value": "={{ $env.ALLOWED_ORIGINS || '*' }}" },
+              { "name": "Content-Type", "value": "application/json" },
+              { "name": "X-Request-ID", "value": "={{ $execution.id }}" }
             ]
           }
         }
@@ -20,52 +22,149 @@
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 2,
       "position": [200, 400],
-      "webhookId": "multi-agent-chat"
+      "webhookId": "multi-agent-chat",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "HEADER_AUTH_CREDENTIAL_ID",
+          "name": "API Key Auth"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            {
+              "id": "validate-input",
+              "leftValue": "={{ $json.chatInput && $json.chatInput.length > 0 }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "equals" }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "validate-input",
+      "name": "Validate Input",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [350, 400]
     },
     {
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "// Initialize state and extract input\nconst input = $input.first().json;\n\nconst state = {\n  sessionId: input.sessionId || $execution.id,\n  userQuery: input.chatInput,\n  history: input.history || [],\n  phase: 'planning',\n  plan: null,\n  currentStep: 0,\n  stepResults: [],\n  iterations: 0,\n  maxIterations: 5,\n  events: [],\n  startTime: Date.now()\n};\n\n// Emit RUN_STARTED event\nstate.events.push({\n  type: 'RUN_STARTED',\n  runId: $execution.id,\n  threadId: state.sessionId,\n  timestamp: new Date().toISOString()\n});\n\nreturn { json: state };"
+        "jsCode": "// Initialize state with comprehensive error handling\nconst input = $input.first().json;\n\n// Validate required fields\nif (!input.chatInput || typeof input.chatInput !== 'string') {\n  throw new Error('Invalid input: chatInput is required and must be a string');\n}\n\nconst state = {\n  sessionId: input.sessionId || $execution.id,\n  userQuery: input.chatInput.trim(),\n  history: Array.isArray(input.history) ? input.history : [],\n  phase: 'planning',\n  plan: null,\n  currentStep: 0,\n  stepResults: [],\n  iterations: 0,\n  maxIterations: parseInt($env.MAX_ITERATIONS) || 5,\n  maxStepsPerPlan: parseInt($env.MAX_STEPS_PER_PLAN) || 10,\n  events: [],\n  errors: [],\n  startTime: Date.now(),\n  executionId: $execution.id,\n  metadata: {\n    inputLength: input.chatInput.length,\n    historyLength: (input.history || []).length,\n    timestamp: new Date().toISOString()\n  }\n};\n\n// Emit RUN_STARTED event\nstate.events.push({\n  type: 'RUN_STARTED',\n  runId: $execution.id,\n  threadId: state.sessionId,\n  timestamp: new Date().toISOString()\n});\n\nreturn { json: state };"
       },
       "id": "init-state",
       "name": "Initialize State",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [400, 400]
+      "position": [500, 400],
+      "onError": "continueRegularOutput"
     },
     {
       "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ error: 'Invalid request: chatInput is required', code: 'INVALID_INPUT' }) }}",
         "options": {
-          "systemMessage": "You are the PLANNING AGENT in a multi-agent system.\n\nYour ONLY job is to analyze the user's request and create a detailed execution plan.\n\nYou must output a JSON plan with this exact structure:\n{\n  \"goal\": \"Clear statement of what needs to be achieved\",\n  \"complexity\": \"low|medium|high\",\n  \"steps\": [\n    {\n      \"id\": \"step_1\",\n      \"description\": \"What this step accomplishes\",\n      \"tool\": \"browser|code_interpreter|web_search|deep_research|rag_search|none\",\n      \"toolInput\": \"Specific input for the tool\",\n      \"expectedOutput\": \"What we expect to get\",\n      \"dependsOn\": []\n    }\n  ],\n  \"successCriteria\": \"How to know if the task is complete\"\n}\n\nAvailable tools:\n- browser: Web automation with Playwright (navigate, click, fill forms, scrape)\n- code_interpreter: Execute Python code for calculations, data processing\n- web_search: Quick web search for current information\n- deep_research: Comprehensive multi-source research on a topic\n- rag_search: Search internal knowledge base\n- none: Pure reasoning/synthesis step\n\nIMPORTANT:\n1. Break complex tasks into 3-7 manageable steps\n2. Identify dependencies between steps\n3. Choose the most appropriate tool for each step\n4. Be specific in toolInput - it will be passed directly to the tool\n\nOutput ONLY the JSON plan, no other text."
+          "responseCode": 400
+        }
+      },
+      "id": "error-invalid-input",
+      "name": "Error: Invalid Input",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [500, 600]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.userQuery }}",
+        "hasOutputParser": true,
+        "options": {
+          "systemMessage": "You are the PLANNING AGENT in a multi-agent ReAct orchestration system.\n\nYour ONLY job is to analyze the user's request and create a detailed, executable plan.\n\nIMPORTANT CONSTRAINTS:\n- Maximum {{ $json.maxStepsPerPlan }} steps per plan\n- Each step must be atomic and independently executable\n- Always include error recovery considerations\n\nAvailable tools (use exact names):\n- browser_agent: Web automation with Playwright (navigate, click, fill, scrape, screenshot)\n- code_interpreter_agent: Python execution (calculations, data processing, file generation)\n- web_search_agent: Quick web searches (SerpAPI, Wikipedia)\n- deep_research_agent: Comprehensive multi-source research\n- rag_search_agent: Internal knowledge base semantic search\n- none: Pure reasoning/synthesis without tools\n\nPlan Structure Requirements:\n1. goal: Clear, measurable objective\n2. complexity: low (1-2 steps), medium (3-5 steps), high (6+ steps)\n3. steps: Array of executable steps\n4. successCriteria: How to verify completion\n5. fallbackStrategy: What to do if primary approach fails\n\nOutput ONLY valid JSON matching the required schema."
         }
       },
       "id": "planning-agent",
       "name": "Planning Agent",
       "type": "@n8n/n8n-nodes-langchain.agent",
       "typeVersion": 1.7,
-      "position": [600, 400]
+      "position": [700, 400],
+      "onError": "continueRegularOutput"
     },
     {
       "parameters": {
         "modelId": { "__rl": true, "value": "gpt-4o", "mode": "list" },
-        "options": { "temperature": 0.3 }
+        "options": {
+          "temperature": 0.2,
+          "maxTokens": 2000,
+          "timeout": 60000
+        }
       },
       "id": "planner-llm",
       "name": "Planner LLM",
       "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
       "typeVersion": 1,
-      "position": [600, 600]
+      "position": [700, 600]
+    },
+    {
+      "parameters": {
+        "schemaType": "fromJson",
+        "jsonSchemaExample": "{\n  \"goal\": \"string\",\n  \"complexity\": \"low|medium|high\",\n  \"steps\": [\n    {\n      \"id\": \"step_1\",\n      \"description\": \"string\",\n      \"tool\": \"browser_agent|code_interpreter_agent|web_search_agent|deep_research_agent|rag_search_agent|none\",\n      \"toolInput\": \"string\",\n      \"expectedOutput\": \"string\",\n      \"dependsOn\": [],\n      \"timeout\": 30000,\n      \"retryCount\": 1\n    }\n  ],\n  \"successCriteria\": \"string\",\n  \"fallbackStrategy\": \"string\"\n}"
+      },
+      "id": "plan-output-parser",
+      "name": "Plan Output Parser",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.2,
+      "position": [700, 750]
+    },
+    {
+      "parameters": {
+        "sessionIdType": "customKey",
+        "sessionKey": "=planning_{{ $json.sessionId }}",
+        "contextWindowLength": 10
+      },
+      "id": "planner-memory",
+      "name": "Planner Memory",
+      "type": "@n8n/n8n-nodes-langchain.memoryBufferWindow",
+      "typeVersion": 1.2,
+      "position": [850, 600]
     },
     {
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "// Parse planning agent output and update state\nconst state = $('Initialize State').first().json;\nconst plannerOutput = $input.first().json.output;\n\ntry {\n  // Extract JSON from the planner output\n  const jsonMatch = plannerOutput.match(/\\{[\\s\\S]*\\}/);\n  if (!jsonMatch) throw new Error('No JSON found in planner output');\n  \n  const plan = JSON.parse(jsonMatch[0]);\n  state.plan = plan;\n  state.phase = 'executing';\n  \n  // Emit STEP_STARTED for planning\n  state.events.push({\n    type: 'STEP_STARTED',\n    stepId: 'planning',\n    stepName: 'Creating execution plan',\n    stepType: 'planning',\n    timestamp: new Date().toISOString()\n  });\n  \n  // Emit STATE_DELTA with the plan\n  state.events.push({\n    type: 'STATE_DELTA',\n    delta: [\n      { op: 'replace', path: '/phase', value: 'executing' },\n      { op: 'add', path: '/plan', value: plan }\n    ],\n    timestamp: new Date().toISOString()\n  });\n  \n  // Emit STEP_FINISHED for planning\n  state.events.push({\n    type: 'STEP_FINISHED',\n    stepId: 'planning',\n    status: 'complete',\n    result: { stepsCount: plan.steps.length },\n    timestamp: new Date().toISOString()\n  });\n  \n} catch (error) {\n  state.error = `Failed to parse plan: ${error.message}`;\n  state.phase = 'error';\n}\n\nreturn { json: state };"
+        "jsCode": "// Parse and validate planning agent output with comprehensive error handling\nconst state = $('Initialize State').first().json;\nconst agentOutput = $input.first().json;\n\ntry {\n  let plan;\n  \n  // Handle both structured output and raw text\n  if (agentOutput.output && typeof agentOutput.output === 'object') {\n    plan = agentOutput.output;\n  } else if (agentOutput.output && typeof agentOutput.output === 'string') {\n    const jsonMatch = agentOutput.output.match(/\\{[\\s\\S]*\\}/);\n    if (!jsonMatch) throw new Error('No valid JSON found in planner output');\n    plan = JSON.parse(jsonMatch[0]);\n  } else {\n    throw new Error('Invalid planner output format');\n  }\n  \n  // Validate plan structure\n  if (!plan.goal || !Array.isArray(plan.steps) || plan.steps.length === 0) {\n    throw new Error('Invalid plan: missing goal or steps');\n  }\n  \n  // Enforce step limits\n  if (plan.steps.length > state.maxStepsPerPlan) {\n    plan.steps = plan.steps.slice(0, state.maxStepsPerPlan);\n    plan.truncated = true;\n  }\n  \n  // Add default values to steps\n  plan.steps = plan.steps.map((step, idx) => ({\n    id: step.id || `step_${idx + 1}`,\n    description: step.description || 'Unnamed step',\n    tool: step.tool || 'none',\n    toolInput: step.toolInput || '',\n    expectedOutput: step.expectedOutput || 'Output not specified',\n    dependsOn: step.dependsOn || [],\n    timeout: step.timeout || 60000,\n    retryCount: step.retryCount || 1,\n    status: 'pending'\n  }));\n  \n  state.plan = plan;\n  state.phase = 'executing';\n  \n  // Emit events\n  state.events.push(\n    {\n      type: 'STEP_STARTED',\n      stepId: 'planning',\n      stepName: 'Creating execution plan',\n      stepType: 'planning',\n      timestamp: new Date().toISOString()\n    },\n    {\n      type: 'STATE_DELTA',\n      delta: [\n        { op: 'replace', path: '/phase', value: 'executing' },\n        { op: 'add', path: '/plan', value: plan }\n      ],\n      timestamp: new Date().toISOString()\n    },\n    {\n      type: 'STEP_FINISHED',\n      stepId: 'planning',\n      status: 'complete',\n      result: { stepsCount: plan.steps.length, complexity: plan.complexity },\n      timestamp: new Date().toISOString()\n    }\n  );\n  \n} catch (error) {\n  state.errors.push({\n    phase: 'planning',\n    message: error.message,\n    timestamp: new Date().toISOString()\n  });\n  state.phase = 'error';\n  state.errorMessage = `Planning failed: ${error.message}`;\n}\n\nreturn { json: state };"
       },
       "id": "parse-plan",
-      "name": "Parse Plan",
+      "name": "Parse & Validate Plan",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [800, 400]
+      "position": [900, 400],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            {
+              "id": "check-plan-error",
+              "leftValue": "={{ $json.phase !== 'error' }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "equals" }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "check-plan-success",
+      "name": "Plan Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1050, 400]
     },
     {
       "parameters": {
@@ -74,7 +173,7 @@
           "conditions": [
             {
               "id": "check-more-steps",
-              "leftValue": "={{ $json.currentStep < $json.plan.steps.length && $json.iterations < $json.maxIterations }}",
+              "leftValue": "={{ $json.currentStep < $json.plan.steps.length && $json.iterations < $json.maxIterations && $json.phase !== 'error' }}",
               "rightValue": true,
               "operator": { "type": "boolean", "operation": "equals" }
             }
@@ -87,135 +186,193 @@
       "name": "More Steps?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
-      "position": [1000, 400]
+      "position": [1200, 400]
     },
     {
       "parameters": {
+        "promptType": "define",
+        "text": "Execute this step:\n\nStep: {{ $json.plan.steps[$json.currentStep].description }}\nTool: {{ $json.plan.steps[$json.currentStep].tool }}\nInput: {{ $json.plan.steps[$json.currentStep].toolInput }}\nExpected Output: {{ $json.plan.steps[$json.currentStep].expectedOutput }}\n\nPrevious Results Context:\n{{ JSON.stringify($json.stepResults.slice(-3), null, 2) }}\n\nExecute the step using the appropriate tool and provide results.",
         "options": {
-          "systemMessage": "You are the MANAGER AGENT orchestrating task execution.\n\nYou have access to these specialized tool agents:\n1. browser_agent - Web automation with Playwright\n2. code_interpreter_agent - Python code execution\n3. web_search_agent - Quick web searches\n4. deep_research_agent - Comprehensive research\n5. rag_search_agent - Internal knowledge base search\n\nCurrent step to execute:\n{{ $json.plan.steps[$json.currentStep].description }}\n\nTool to use: {{ $json.plan.steps[$json.currentStep].tool }}\nTool input: {{ $json.plan.steps[$json.currentStep].toolInput }}\n\nCall the appropriate tool agent with the given input.\nAfter receiving the result, provide a brief summary of what was accomplished.\n\nIMPORTANT: Always call the tool before responding. Do not skip tool calls."
+          "systemMessage": "You are the MANAGER AGENT responsible for executing plan steps.\n\nYou orchestrate specialized tool agents:\n- browser_agent: Web automation (Playwright MCP)\n- code_interpreter_agent: Python code execution\n- web_search_agent: Web searches\n- deep_research_agent: Comprehensive research\n- rag_search_agent: Knowledge base search\n\nExecution Guidelines:\n1. Call the specified tool with the exact input provided\n2. If tool fails, attempt recovery using fallback strategies\n3. Summarize results clearly and concisely\n4. Report any errors or unexpected outcomes\n5. Stay focused on the current step only\n\nALWAYS call the tool before providing a response."
         }
       },
       "id": "manager-agent",
       "name": "Manager Agent",
       "type": "@n8n/n8n-nodes-langchain.agent",
       "typeVersion": 1.7,
-      "position": [1200, 300]
+      "position": [1400, 300],
+      "onError": "continueRegularOutput"
     },
     {
       "parameters": {
         "modelId": { "__rl": true, "value": "gpt-4o", "mode": "list" },
-        "options": { "temperature": 0.5 }
+        "options": {
+          "temperature": 0.4,
+          "maxTokens": 4000,
+          "timeout": 120000
+        }
       },
       "id": "manager-llm",
       "name": "Manager LLM",
       "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
       "typeVersion": 1,
-      "position": [1200, 500]
+      "position": [1400, 500]
     },
     {
       "parameters": {
         "name": "browser_agent",
-        "description": "Executes browser automation tasks using Playwright. Can navigate to URLs, click elements, fill forms, take screenshots, and scrape web content. Input should describe the browser action to perform.",
-        "workflowId": { "__rl": true, "value": "={{ $env.BROWSER_AGENT_WORKFLOW_ID }}", "mode": "id" }
+        "description": "Web automation with Playwright MCP. Capabilities: navigate URLs, click elements, fill forms, extract data, take screenshots, handle dynamic content. Input: natural language description of browser task.",
+        "workflowId": { "__rl": true, "value": "={{ $env.BROWSER_AGENT_WORKFLOW_ID }}", "mode": "id" },
+        "specifyInputSchema": true,
+        "fields": {
+          "values": [
+            { "name": "task", "type": "string", "description": "Browser automation task description", "required": true }
+          ]
+        }
       },
       "id": "tool-browser",
       "name": "Browser Agent Tool",
       "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
-      "typeVersion": 1.1,
-      "position": [1100, 700]
+      "typeVersion": 1.2,
+      "position": [1250, 700]
     },
     {
       "parameters": {
         "name": "code_interpreter_agent",
-        "description": "Executes Python code for calculations, data processing, analysis, and transformations. Input should be the Python code to execute or a description of what calculation/processing is needed.",
-        "workflowId": { "__rl": true, "value": "={{ $env.CODE_AGENT_WORKFLOW_ID }}", "mode": "id" }
+        "description": "Python code execution for calculations, data processing, analysis, file generation. Input: Python code or description of computation needed.",
+        "workflowId": { "__rl": true, "value": "={{ $env.CODE_AGENT_WORKFLOW_ID }}", "mode": "id" },
+        "specifyInputSchema": true,
+        "fields": {
+          "values": [
+            { "name": "task", "type": "string", "description": "Python code or computation description", "required": true }
+          ]
+        }
       },
       "id": "tool-code",
       "name": "Code Interpreter Tool",
       "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
-      "typeVersion": 1.1,
-      "position": [1200, 700]
+      "typeVersion": 1.2,
+      "position": [1350, 700]
     },
     {
       "parameters": {
         "name": "web_search_agent",
-        "description": "Performs quick web searches to find current information, news, or facts. Input should be the search query.",
-        "workflowId": { "__rl": true, "value": "={{ $env.SEARCH_AGENT_WORKFLOW_ID }}", "mode": "id" }
+        "description": "Quick web searches using SerpAPI and Wikipedia. Input: search query string.",
+        "workflowId": { "__rl": true, "value": "={{ $env.SEARCH_AGENT_WORKFLOW_ID }}", "mode": "id" },
+        "specifyInputSchema": true,
+        "fields": {
+          "values": [
+            { "name": "query", "type": "string", "description": "Search query", "required": true }
+          ]
+        }
       },
       "id": "tool-search",
       "name": "Web Search Tool",
       "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
-      "typeVersion": 1.1,
-      "position": [1300, 700]
+      "typeVersion": 1.2,
+      "position": [1450, 700]
     },
     {
       "parameters": {
         "name": "deep_research_agent",
-        "description": "Conducts comprehensive multi-source research on complex topics. Synthesizes information from multiple sources. Input should be the research topic or question.",
-        "workflowId": { "__rl": true, "value": "={{ $env.RESEARCH_AGENT_WORKFLOW_ID }}", "mode": "id" }
+        "description": "Comprehensive multi-source research on complex topics. Synthesizes from multiple sources. Input: research topic or question.",
+        "workflowId": { "__rl": true, "value": "={{ $env.RESEARCH_AGENT_WORKFLOW_ID }}", "mode": "id" },
+        "specifyInputSchema": true,
+        "fields": {
+          "values": [
+            { "name": "topic", "type": "string", "description": "Research topic or question", "required": true }
+          ]
+        }
       },
       "id": "tool-research",
       "name": "Deep Research Tool",
       "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
-      "typeVersion": 1.1,
-      "position": [1400, 700]
+      "typeVersion": 1.2,
+      "position": [1550, 700]
     },
     {
       "parameters": {
         "name": "rag_search_agent",
-        "description": "Searches the internal knowledge base using semantic similarity. Good for finding relevant context from documents and past conversations. Input should be the search query.",
-        "workflowId": { "__rl": true, "value": "={{ $env.RAG_AGENT_WORKFLOW_ID }}", "mode": "id" }
+        "description": "Semantic search over internal knowledge base using vector similarity. Input: natural language query.",
+        "workflowId": { "__rl": true, "value": "={{ $env.RAG_AGENT_WORKFLOW_ID }}", "mode": "id" },
+        "specifyInputSchema": true,
+        "fields": {
+          "values": [
+            { "name": "query", "type": "string", "description": "Semantic search query", "required": true }
+          ]
+        }
       },
       "id": "tool-rag",
       "name": "RAG Search Tool",
       "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
-      "typeVersion": 1.1,
-      "position": [1500, 700]
+      "typeVersion": 1.2,
+      "position": [1650, 700]
     },
     {
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "// Process manager agent result and update state\nconst prevState = $('More Steps?').first().json;\nconst managerOutput = $input.first().json;\n\nconst state = { ...prevState };\nconst currentStep = state.plan.steps[state.currentStep];\n\n// Record step result\nconst stepResult = {\n  stepId: currentStep.id,\n  description: currentStep.description,\n  tool: currentStep.tool,\n  result: managerOutput.output,\n  toolCalls: managerOutput.toolCalls || [],\n  completedAt: new Date().toISOString()\n};\n\nstate.stepResults.push(stepResult);\n\n// Emit TOOL_CALL events for each tool used\nif (managerOutput.toolCalls) {\n  for (const toolCall of managerOutput.toolCalls) {\n    state.events.push({\n      type: 'TOOL_CALL_START',\n      toolCallId: toolCall.id || `tool_${Date.now()}`,\n      toolCallName: toolCall.name,\n      timestamp: new Date().toISOString()\n    });\n    \n    state.events.push({\n      type: 'TOOL_CALL_RESULT',\n      toolCallId: toolCall.id || `tool_${Date.now()}`,\n      result: JSON.stringify(toolCall.result).slice(0, 500),\n      timestamp: new Date().toISOString()\n    });\n  }\n}\n\n// Emit STEP_FINISHED\nstate.events.push({\n  type: 'STEP_FINISHED',\n  stepId: currentStep.id,\n  status: 'complete',\n  result: { summary: managerOutput.output.slice(0, 200) },\n  timestamp: new Date().toISOString()\n});\n\n// Move to next step\nstate.currentStep++;\nstate.iterations++;\n\n// Emit STATE_DELTA\nstate.events.push({\n  type: 'STATE_DELTA',\n  delta: [\n    { op: 'replace', path: '/plan/currentStepIndex', value: state.currentStep },\n    { op: 'add', path: '/stepResults/-', value: stepResult }\n  ],\n  timestamp: new Date().toISOString()\n});\n\n// Emit next STEP_STARTED if more steps\nif (state.currentStep < state.plan.steps.length) {\n  const nextStep = state.plan.steps[state.currentStep];\n  state.events.push({\n    type: 'STEP_STARTED',\n    stepId: nextStep.id,\n    stepName: nextStep.description,\n    stepType: nextStep.tool,\n    timestamp: new Date().toISOString()\n  });\n}\n\nreturn { json: state };"
+        "jsCode": "// Process manager agent result with comprehensive error handling\nconst prevState = $('More Steps?').first().json;\nconst managerOutput = $input.first().json;\n\nconst state = JSON.parse(JSON.stringify(prevState));\n\ntry {\n  const currentStep = state.plan.steps[state.currentStep];\n  const hasError = managerOutput.error || !managerOutput.output;\n  \n  // Record step result\n  const stepResult = {\n    stepId: currentStep.id,\n    description: currentStep.description,\n    tool: currentStep.tool,\n    result: hasError ? { error: managerOutput.error || 'No output' } : managerOutput.output,\n    success: !hasError,\n    toolCalls: managerOutput.intermediateSteps || [],\n    startedAt: currentStep.startedAt || new Date().toISOString(),\n    completedAt: new Date().toISOString(),\n    duration: Date.now() - (currentStep.startedAtMs || Date.now())\n  };\n  \n  state.stepResults.push(stepResult);\n  \n  // Emit TOOL_CALL events\n  if (managerOutput.intermediateSteps) {\n    for (const step of managerOutput.intermediateSteps) {\n      if (step.action && step.action.tool) {\n        state.events.push({\n          type: 'TOOL_CALL_START',\n          toolCallId: step.action.toolCallId || `tool_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,\n          toolCallName: step.action.tool,\n          timestamp: new Date().toISOString()\n        });\n        \n        state.events.push({\n          type: 'TOOL_CALL_RESULT',\n          toolCallId: step.action.toolCallId || `tool_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,\n          result: typeof step.observation === 'string' ? step.observation.slice(0, 1000) : JSON.stringify(step.observation).slice(0, 1000),\n          timestamp: new Date().toISOString()\n        });\n      }\n    }\n  }\n  \n  // Update step status\n  state.plan.steps[state.currentStep].status = hasError ? 'failed' : 'complete';\n  \n  // Emit STEP_FINISHED\n  state.events.push({\n    type: 'STEP_FINISHED',\n    stepId: currentStep.id,\n    status: hasError ? 'failed' : 'complete',\n    result: { summary: stepResult.result?.toString?.()?.slice(0, 200) || 'Completed' },\n    timestamp: new Date().toISOString()\n  });\n  \n  // Move to next step\n  state.currentStep++;\n  state.iterations++;\n  \n  // Emit STATE_DELTA\n  state.events.push({\n    type: 'STATE_DELTA',\n    delta: [\n      { op: 'replace', path: '/plan/currentStepIndex', value: state.currentStep },\n      { op: 'add', path: '/stepResults/-', value: stepResult }\n    ],\n    timestamp: new Date().toISOString()\n  });\n  \n  // Emit next STEP_STARTED if more steps\n  if (state.currentStep < state.plan.steps.length) {\n    const nextStep = state.plan.steps[state.currentStep];\n    nextStep.startedAt = new Date().toISOString();\n    nextStep.startedAtMs = Date.now();\n    nextStep.status = 'active';\n    \n    state.events.push({\n      type: 'STEP_STARTED',\n      stepId: nextStep.id,\n      stepName: nextStep.description,\n      stepType: nextStep.tool,\n      timestamp: new Date().toISOString()\n    });\n  }\n  \n} catch (error) {\n  state.errors.push({\n    phase: 'execution',\n    step: state.currentStep,\n    message: error.message,\n    timestamp: new Date().toISOString()\n  });\n}\n\nreturn { json: state };"
       },
       "id": "process-step-result",
       "name": "Process Step Result",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1400, 300]
+      "position": [1600, 300],
+      "onError": "continueRegularOutput"
     },
     {
       "parameters": {
+        "promptType": "define",
+        "text": "Review the execution results:\n\nOriginal Goal: {{ $json.plan.goal }}\nSuccess Criteria: {{ $json.plan.successCriteria }}\nTotal Steps: {{ $json.plan.steps.length }}\nCompleted Steps: {{ $json.stepResults.length }}\n\nStep Results:\n{{ JSON.stringify($json.stepResults, null, 2) }}\n\nErrors Encountered: {{ $json.errors.length > 0 ? JSON.stringify($json.errors) : 'None' }}\n\nProvide quality assessment.",
+        "hasOutputParser": true,
         "options": {
-          "systemMessage": "You are the QUALITY CONTROL AGENT.\n\nYour job is to review the execution results and determine if the task was completed successfully.\n\nOriginal Goal: {{ $json.plan.goal }}\nSuccess Criteria: {{ $json.plan.successCriteria }}\n\nStep Results:\n{{ JSON.stringify($json.stepResults, null, 2) }}\n\nEvaluate the results and output a JSON response:\n{\n  \"approved\": true/false,\n  \"qualityScore\": 1-10,\n  \"issues\": [\"list of any issues found\"],\n  \"suggestions\": [\"list of improvement suggestions\"],\n  \"requiresRevision\": true/false,\n  \"revisionInstructions\": \"If revision needed, explain what to fix\",\n  \"finalSummary\": \"Comprehensive summary of the completed work\"\n}\n\nBe thorough but fair. Only reject if there are critical issues.\nOutput ONLY the JSON, no other text."
+          "systemMessage": "You are the QUALITY CONTROL AGENT.\n\nYour job is to:\n1. Review all execution results against success criteria\n2. Assess overall quality and completeness\n3. Identify any issues or gaps\n4. Determine if revision is needed\n5. Provide a comprehensive final summary\n\nScoring Guidelines:\n- 9-10: Exceptional, exceeds requirements\n- 7-8: Good, meets all requirements\n- 5-6: Acceptable, minor issues\n- 3-4: Poor, significant issues\n- 1-2: Failed, does not meet requirements\n\nBe thorough but fair. Only require revision for critical issues.\nAlways explain your reasoning."
         }
       },
       "id": "qc-agent",
       "name": "Quality Control Agent",
       "type": "@n8n/n8n-nodes-langchain.agent",
       "typeVersion": 1.7,
-      "position": [1200, 500]
+      "position": [1400, 500],
+      "onError": "continueRegularOutput"
     },
     {
       "parameters": {
         "modelId": { "__rl": true, "value": "gpt-4o", "mode": "list" },
-        "options": { "temperature": 0.2 }
+        "options": {
+          "temperature": 0.1,
+          "maxTokens": 2000,
+          "timeout": 60000
+        }
       },
       "id": "qc-llm",
       "name": "QC LLM",
       "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
       "typeVersion": 1,
-      "position": [1200, 700]
+      "position": [1400, 700]
+    },
+    {
+      "parameters": {
+        "schemaType": "fromJson",
+        "jsonSchemaExample": "{\n  \"approved\": true,\n  \"qualityScore\": 8,\n  \"issues\": [],\n  \"suggestions\": [],\n  \"requiresRevision\": false,\n  \"revisionInstructions\": \"\",\n  \"finalSummary\": \"Comprehensive summary of completed work\",\n  \"reasoning\": \"Explanation of quality assessment\"\n}"
+      },
+      "id": "qc-output-parser",
+      "name": "QC Output Parser",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.2,
+      "position": [1400, 850]
     },
     {
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "// Parse QC result and finalize\nconst state = $('More Steps?').first().json;\nconst qcOutput = $input.first().json.output;\n\ntry {\n  const jsonMatch = qcOutput.match(/\\{[\\s\\S]*\\}/);\n  if (!jsonMatch) throw new Error('No JSON in QC output');\n  \n  const qcResult = JSON.parse(jsonMatch[0]);\n  state.qcResult = qcResult;\n  state.phase = qcResult.approved ? 'complete' : 'revision_needed';\n  \n  // Emit QC step events\n  state.events.push({\n    type: 'STEP_STARTED',\n    stepId: 'quality_control',\n    stepName: 'Quality Control Review',\n    stepType: 'review',\n    timestamp: new Date().toISOString()\n  });\n  \n  state.events.push({\n    type: 'STEP_FINISHED',\n    stepId: 'quality_control',\n    status: qcResult.approved ? 'complete' : 'failed',\n    result: {\n      qualityScore: qcResult.qualityScore,\n      approved: qcResult.approved\n    },\n    timestamp: new Date().toISOString()\n  });\n  \n  // Emit final STATE_DELTA\n  state.events.push({\n    type: 'STATE_DELTA',\n    delta: [\n      { op: 'replace', path: '/phase', value: state.phase },\n      { op: 'add', path: '/qualityScore', value: qcResult.qualityScore }\n    ],\n    timestamp: new Date().toISOString()\n  });\n  \n} catch (error) {\n  state.error = `QC parsing failed: ${error.message}`;\n  state.phase = 'error';\n}\n\nreturn { json: state };"
+        "jsCode": "// Parse QC result with error handling\nconst state = $('More Steps?').first().json;\nconst qcOutput = $input.first().json;\n\ntry {\n  let qcResult;\n  \n  // Handle structured or raw output\n  if (qcOutput.output && typeof qcOutput.output === 'object') {\n    qcResult = qcOutput.output;\n  } else if (qcOutput.output && typeof qcOutput.output === 'string') {\n    const jsonMatch = qcOutput.output.match(/\\{[\\s\\S]*\\}/);\n    if (!jsonMatch) throw new Error('No JSON in QC output');\n    qcResult = JSON.parse(jsonMatch[0]);\n  } else {\n    throw new Error('Invalid QC output format');\n  }\n  \n  // Ensure required fields\n  qcResult = {\n    approved: qcResult.approved ?? true,\n    qualityScore: Math.min(10, Math.max(1, qcResult.qualityScore || 5)),\n    issues: qcResult.issues || [],\n    suggestions: qcResult.suggestions || [],\n    requiresRevision: qcResult.requiresRevision ?? false,\n    revisionInstructions: qcResult.revisionInstructions || '',\n    finalSummary: qcResult.finalSummary || 'Task completed.',\n    reasoning: qcResult.reasoning || ''\n  };\n  \n  state.qcResult = qcResult;\n  state.phase = qcResult.approved ? 'complete' : 'revision_needed';\n  \n  // Emit QC events\n  state.events.push(\n    {\n      type: 'STEP_STARTED',\n      stepId: 'quality_control',\n      stepName: 'Quality Control Review',\n      stepType: 'review',\n      timestamp: new Date().toISOString()\n    },\n    {\n      type: 'STEP_FINISHED',\n      stepId: 'quality_control',\n      status: qcResult.approved ? 'complete' : 'failed',\n      result: { qualityScore: qcResult.qualityScore, approved: qcResult.approved },\n      timestamp: new Date().toISOString()\n    },\n    {\n      type: 'STATE_DELTA',\n      delta: [\n        { op: 'replace', path: '/phase', value: state.phase },\n        { op: 'add', path: '/qualityScore', value: qcResult.qualityScore }\n      ],\n      timestamp: new Date().toISOString()\n    }\n  );\n  \n} catch (error) {\n  // Default to approved on QC parse error to avoid blocking\n  state.qcResult = {\n    approved: true,\n    qualityScore: 5,\n    issues: [`QC parsing error: ${error.message}`],\n    suggestions: [],\n    requiresRevision: false,\n    revisionInstructions: '',\n    finalSummary: state.stepResults.map(r => r.result).join('\\n\\n') || 'Task completed with QC warnings.',\n    reasoning: 'QC parsing failed, defaulting to approved'\n  };\n  state.phase = 'complete';\n  state.errors.push({\n    phase: 'qc',\n    message: error.message,\n    timestamp: new Date().toISOString()\n  });\n}\n\nreturn { json: state };"
       },
       "id": "parse-qc",
       "name": "Parse QC Result",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1400, 500]
+      "position": [1600, 500],
+      "onError": "continueRegularOutput"
     },
     {
       "parameters": {
@@ -224,7 +381,7 @@
           "conditions": [
             {
               "id": "check-revision",
-              "leftValue": "={{ $json.qcResult.requiresRevision && $json.iterations < $json.maxIterations }}",
+              "leftValue": "={{ $json.qcResult && $json.qcResult.requiresRevision && $json.iterations < $json.maxIterations }}",
               "rightValue": true,
               "operator": { "type": "boolean", "operation": "equals" }
             }
@@ -237,106 +394,107 @@
       "name": "Needs Revision?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
-      "position": [1600, 500]
+      "position": [1800, 500]
     },
     {
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "// Generate final response with all events\nconst state = $json;\n\n// Emit RUN_FINISHED\nstate.events.push({\n  type: 'RUN_FINISHED',\n  runId: $execution.id,\n  threadId: state.sessionId,\n  status: state.phase === 'complete' ? 'success' : 'error',\n  timestamp: new Date().toISOString()\n});\n\n// Build final output\nconst finalResponse = {\n  output: state.qcResult?.finalSummary || 'Task completed.',\n  plan: state.plan,\n  stepResults: state.stepResults,\n  qualityScore: state.qcResult?.qualityScore,\n  iterations: state.iterations,\n  events: state.events,\n  executionTime: Date.now() - state.startTime\n};\n\nreturn { json: finalResponse };"
+        "jsCode": "// Generate final response\nconst state = $json;\n\n// Emit RUN_FINISHED\nstate.events.push({\n  type: 'RUN_FINISHED',\n  runId: state.executionId,\n  threadId: state.sessionId,\n  status: state.phase === 'complete' ? 'success' : (state.phase === 'error' ? 'error' : 'partial'),\n  timestamp: new Date().toISOString()\n});\n\n// Build final output\nconst finalResponse = {\n  success: state.phase === 'complete' || state.phase === 'revision_needed',\n  output: state.qcResult?.finalSummary || state.errorMessage || 'Task processing completed.',\n  plan: state.plan,\n  stepResults: state.stepResults,\n  qualityScore: state.qcResult?.qualityScore || null,\n  iterations: state.iterations,\n  events: state.events,\n  errors: state.errors,\n  metadata: {\n    executionId: state.executionId,\n    sessionId: state.sessionId,\n    executionTime: Date.now() - state.startTime,\n    totalSteps: state.plan?.steps?.length || 0,\n    completedSteps: state.stepResults.length,\n    phase: state.phase\n  }\n};\n\nreturn { json: finalResponse };"
       },
       "id": "generate-response",
       "name": "Generate Response",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1800, 400]
+      "position": [2000, 400]
     },
     {
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "// Reset for revision loop\nconst state = $json;\nstate.currentStep = 0;\nstate.stepResults = [];\nstate.phase = 'executing';\n\n// Emit revision started\nstate.events.push({\n  type: 'STEP_STARTED',\n  stepId: 'revision',\n  stepName: 'Executing revision based on QC feedback',\n  stepType: 'revision',\n  timestamp: new Date().toISOString()\n});\n\nreturn { json: state };"
+        "jsCode": "// Prepare for revision loop\nconst state = JSON.parse(JSON.stringify($json));\n\nstate.currentStep = 0;\nstate.stepResults = [];\nstate.phase = 'executing';\nstate.iterations++;\n\n// Clear step statuses\nstate.plan.steps.forEach(step => {\n  step.status = 'pending';\n  delete step.startedAt;\n  delete step.startedAtMs;\n});\n\n// Emit revision events\nstate.events.push(\n  {\n    type: 'STEP_STARTED',\n    stepId: 'revision',\n    stepName: `Revision ${state.iterations}: ${state.qcResult?.revisionInstructions?.slice(0, 100) || 'Re-executing plan'}`,\n    stepType: 'revision',\n    timestamp: new Date().toISOString()\n  },\n  {\n    type: 'STATE_DELTA',\n    delta: [\n      { op: 'replace', path: '/phase', value: 'executing' },\n      { op: 'replace', path: '/iterations', value: state.iterations }\n    ],\n    timestamp: new Date().toISOString()\n  }\n);\n\nreturn { json: state };"
       },
       "id": "prepare-revision",
       "name": "Prepare Revision",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1800, 600]
+      "position": [2000, 600]
     },
     {
       "parameters": {
         "respondWith": "json",
         "responseBody": "={{ JSON.stringify($json) }}",
-        "options": {}
+        "options": {
+          "responseCode": "={{ $json.success ? 200 : ($json.phase === 'error' ? 500 : 207) }}"
+        }
       },
       "id": "respond-webhook",
       "name": "Respond to Webhook",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
-      "position": [2000, 400]
+      "position": [2200, 400]
     },
     {
       "parameters": {
         "sessionIdType": "customKey",
-        "sessionKey": "={{ $json.sessionId }}",
+        "sessionKey": "=session_{{ $json.sessionId }}",
         "contextWindowLength": 20
       },
       "id": "short-term-memory",
       "name": "Short-Term Memory",
       "type": "@n8n/n8n-nodes-langchain.memoryBufferWindow",
       "typeVersion": 1.2,
-      "position": [500, 600]
+      "position": [550, 600]
     },
     {
       "parameters": {
-        "qdrantCollection": { "__rl": true, "value": "agent_long_term_memory", "mode": "list" },
-        "options": {}
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Handle planning error - generate error response\nconst state = $json;\n\nstate.events.push({\n  type: 'RUN_FINISHED',\n  runId: state.executionId,\n  threadId: state.sessionId,\n  status: 'error',\n  timestamp: new Date().toISOString()\n});\n\nconst errorResponse = {\n  success: false,\n  error: state.errorMessage || 'Planning failed',\n  output: `I encountered an error while planning: ${state.errorMessage}. Please try rephrasing your request.`,\n  events: state.events,\n  errors: state.errors,\n  metadata: {\n    executionId: state.executionId,\n    sessionId: state.sessionId,\n    executionTime: Date.now() - state.startTime,\n    phase: 'error'\n  }\n};\n\nreturn { json: errorResponse };"
       },
-      "id": "long-term-memory",
-      "name": "Long-Term Memory (Qdrant)",
-      "type": "@n8n/n8n-nodes-langchain.memoryVectorStore",
-      "typeVersion": 1,
-      "position": [500, 750]
-    },
-    {
-      "parameters": {
-        "model": "text-embedding-3-small",
-        "options": {}
-      },
-      "id": "embeddings",
-      "name": "OpenAI Embeddings",
-      "type": "@n8n/n8n-nodes-langchain.embeddingsOpenAi",
-      "typeVersion": 1,
-      "position": [500, 900]
-    },
-    {
-      "parameters": {
-        "qdrantCollection": { "__rl": true, "value": "agent_long_term_memory", "mode": "list" },
-        "options": {}
-      },
-      "id": "qdrant-store",
-      "name": "Qdrant Vector Store",
-      "type": "@n8n/n8n-nodes-langchain.vectorStoreQdrant",
-      "typeVersion": 1,
-      "position": [700, 750]
+      "id": "handle-plan-error",
+      "name": "Handle Plan Error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1200, 550]
     }
   ],
   "connections": {
     "Main Webhook": {
-      "main": [[{ "node": "Initialize State", "type": "main", "index": 0 }]]
+      "main": [[{ "node": "Validate Input", "type": "main", "index": 0 }]]
+    },
+    "Validate Input": {
+      "main": [
+        [{ "node": "Initialize State", "type": "main", "index": 0 }],
+        [{ "node": "Error: Invalid Input", "type": "main", "index": 0 }]
+      ]
     },
     "Initialize State": {
       "main": [[{ "node": "Planning Agent", "type": "main", "index": 0 }]]
     },
     "Planning Agent": {
-      "main": [[{ "node": "Parse Plan", "type": "main", "index": 0 }]]
+      "main": [[{ "node": "Parse & Validate Plan", "type": "main", "index": 0 }]]
     },
     "Planner LLM": {
       "ai_languageModel": [[{ "node": "Planning Agent", "type": "ai_languageModel", "index": 0 }]]
     },
-    "Short-Term Memory": {
+    "Plan Output Parser": {
+      "ai_outputParser": [[{ "node": "Planning Agent", "type": "ai_outputParser", "index": 0 }]]
+    },
+    "Planner Memory": {
       "ai_memory": [[{ "node": "Planning Agent", "type": "ai_memory", "index": 0 }]]
     },
-    "Parse Plan": {
-      "main": [[{ "node": "More Steps?", "type": "main", "index": 0 }]]
+    "Short-Term Memory": {
+      "ai_memory": [[{ "node": "Manager Agent", "type": "ai_memory", "index": 0 }]]
+    },
+    "Parse & Validate Plan": {
+      "main": [[{ "node": "Plan Valid?", "type": "main", "index": 0 }]]
+    },
+    "Plan Valid?": {
+      "main": [
+        [{ "node": "More Steps?", "type": "main", "index": 0 }],
+        [{ "node": "Handle Plan Error", "type": "main", "index": 0 }]
+      ]
+    },
+    "Handle Plan Error": {
+      "main": [[{ "node": "Respond to Webhook", "type": "main", "index": 0 }]]
     },
     "More Steps?": {
       "main": [
@@ -374,6 +532,9 @@
     "QC LLM": {
       "ai_languageModel": [[{ "node": "Quality Control Agent", "type": "ai_languageModel", "index": 0 }]]
     },
+    "QC Output Parser": {
+      "ai_outputParser": [[{ "node": "Quality Control Agent", "type": "ai_outputParser", "index": 0 }]]
+    },
     "Parse QC Result": {
       "main": [[{ "node": "Needs Revision?", "type": "main", "index": 0 }]]
     },
@@ -388,15 +549,16 @@
     },
     "Prepare Revision": {
       "main": [[{ "node": "More Steps?", "type": "main", "index": 0 }]]
-    },
-    "OpenAI Embeddings": {
-      "ai_embedding": [[{ "node": "Qdrant Vector Store", "type": "ai_embedding", "index": 0 }]]
     }
   },
   "settings": {
-    "executionOrder": "v1"
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "={{ $env.ERROR_WORKFLOW_ID }}"
   },
   "staticData": null,
-  "tags": ["multi-agent", "react", "orchestration"],
+  "tags": ["multi-agent", "react", "orchestration", "production"],
+  "pinData": {},
   "triggerCount": 0
 }

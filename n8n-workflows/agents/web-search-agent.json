@@ -11,64 +11,150 @@
     },
     {
       "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Input validation\nconst input = $input.first().json;\n\n// Validate required fields\nif (!input.query || typeof input.query !== 'string' || input.query.trim().length === 0) {\n  return {\n    json: {\n      success: false,\n      error: 'Invalid input: query is required and must be a non-empty string',\n      agentType: 'web_search',\n      errorCode: 'INVALID_INPUT'\n    }\n  };\n}\n\n// Sanitize query - remove potentially harmful content\nlet sanitizedQuery = input.query.trim()\n  .replace(/<[^>]*>/g, '') // Remove HTML tags\n  .slice(0, 500); // Limit query length\n\nreturn {\n  json: {\n    query: sanitizedQuery,\n    sessionId: input.sessionId || $execution.id,\n    startTime: Date.now(),\n    metadata: {\n      originalQueryLength: input.query.length,\n      sanitizedQueryLength: sanitizedQuery.length,\n      executionId: $execution.id\n    }\n  }\n};"
+      },
+      "id": "validate-input",
+      "name": "Validate Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [350, 300],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            {
+              "id": "check-valid",
+              "leftValue": "={{ !$json.error }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "equals" }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "check-input-valid",
+      "name": "Input Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [500, 300]
+    },
+    {
+      "parameters": {
         "options": {
-          "systemMessage": "You are a Web Search Agent specialized in finding current information.\n\nCapabilities:\n- Perform web searches using multiple search engines\n- Find current news and recent information\n- Locate specific facts, statistics, and data\n- Search for technical documentation\n- Find company/product information\n\nGuidelines:\n1. Formulate precise search queries\n2. Verify information from multiple sources when possible\n3. Note the recency and reliability of sources\n4. Extract relevant snippets and key facts\n5. Provide source URLs for all information\n\nUse the search tools available to find the requested information.\nSummarize findings with source citations."
+          "systemMessage": "You are a Web Search Agent specialized in finding current information.\n\nCapabilities:\n- Perform web searches using SerpAPI\n- Search Wikipedia for background information\n- Find current news and recent information\n- Locate specific facts, statistics, and data\n- Search for technical documentation\n- Find company/product information\n\nSEARCH STRATEGY:\n1. Start with a broad search to understand the topic\n2. Refine with specific queries for details\n3. Use Wikipedia for background/definitions\n4. Cross-reference critical facts\n\nOUTPUT GUIDELINES:\n1. Formulate precise search queries\n2. Note the recency and reliability of sources\n3. Extract relevant snippets and key facts\n4. ALWAYS provide source URLs for all information\n5. Indicate confidence level based on source quality\n6. Summarize findings clearly\n\nSOURCE QUALITY INDICATORS:\n- Official sites (.gov, .edu, company sites) = High\n- Established news outlets = Medium-High\n- Wikipedia = Medium (good for background)\n- Forums/blogs = Low (verify elsewhere)\n\nLIMITATIONS:\n- Maximum 5 searches per request\n- Respect rate limits\n- Cannot access paywalled content"
         }
       },
       "id": "search-agent",
       "name": "Search Agent",
       "type": "@n8n/n8n-nodes-langchain.agent",
       "typeVersion": 1.7,
-      "position": [400, 300]
+      "position": [650, 200],
+      "onError": "continueRegularOutput"
     },
     {
       "parameters": {
         "modelId": { "__rl": true, "value": "gpt-4o-mini", "mode": "list" },
-        "options": { "temperature": 0.3 }
+        "options": {
+          "temperature": 0.3,
+          "maxTokens": 2000,
+          "timeout": 60000
+        }
       },
       "id": "search-llm",
       "name": "Search LLM",
       "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
       "typeVersion": 1,
-      "position": [400, 500]
+      "position": [650, 450],
+      "credentials": {
+        "openAiApi": {
+          "id": "OPENAI_CREDENTIAL_ID",
+          "name": "OpenAI API"
+        }
+      }
     },
     {
       "parameters": {
         "name": "web_search",
-        "description": "Search the web for information. Input should be a search query string. Returns relevant search results with titles, snippets, and URLs."
+        "description": "Search the web for information using SerpAPI. Input should be a search query string. Returns relevant search results with titles, snippets, and URLs. Best for current events, news, and specific facts."
       },
       "id": "serpapi-tool",
       "name": "SerpAPI Tool",
       "type": "@n8n/n8n-nodes-langchain.toolSerpApi",
       "typeVersion": 1,
-      "position": [550, 500]
+      "position": [750, 450],
+      "credentials": {
+        "serpApi": {
+          "id": "SERPAPI_CREDENTIAL_ID",
+          "name": "SerpAPI"
+        }
+      }
     },
     {
       "parameters": {
         "name": "wikipedia_search",
-        "description": "Search Wikipedia for background information and general knowledge. Good for definitions, historical context, and encyclopedic information."
+        "description": "Search Wikipedia for background information, definitions, and general knowledge. Good for historical context, encyclopedic information, and understanding concepts. Returns article summaries.",
+        "options": {
+          "topK": 3
+        }
       },
       "id": "wikipedia-tool",
       "name": "Wikipedia Tool",
       "type": "@n8n/n8n-nodes-langchain.toolWikipedia",
       "typeVersion": 1,
-      "position": [700, 500]
+      "position": [900, 450]
     },
     {
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const result = $input.first().json;\n\nreturn {\n  json: {\n    success: true,\n    agentType: 'web_search',\n    output: result.output,\n    sources: result.sources || [],\n    searchQueries: result.searchQueries || [],\n    resultCount: result.resultCount || 0\n  }\n};"
+        "jsCode": "// Format successful output with sources\nconst input = $('Validate Input').first().json;\nconst result = $input.first().json;\n\nconst executionTime = Date.now() - (input.startTime || Date.now());\n\n// Extract sources and search queries\nlet sources = [];\nlet searchQueries = [];\n\ntry {\n  if (result.intermediateSteps) {\n    for (const step of result.intermediateSteps) {\n      // Track search queries\n      if (step.action && step.action.toolInput) {\n        searchQueries.push({\n          tool: step.action.tool,\n          query: step.action.toolInput\n        });\n      }\n      \n      // Extract sources from observations\n      if (step.observation) {\n        const obs = typeof step.observation === 'string' \n          ? step.observation \n          : JSON.stringify(step.observation);\n        \n        // Extract URLs\n        const urlRegex = /https?:\\/\\/[^\\s<>\"'\\]\\)]+/g;\n        const urls = obs.match(urlRegex) || [];\n        for (const url of urls) {\n          if (!sources.find(s => s.url === url)) {\n            sources.push({\n              url,\n              type: url.includes('wikipedia') ? 'wikipedia' : 'web'\n            });\n          }\n        }\n      }\n    }\n  }\n} catch (e) {\n  // Non-critical parsing error\n}\n\nreturn {\n  json: {\n    success: true,\n    agentType: 'web_search',\n    output: result.output || 'Search completed',\n    sources,\n    searchQueries,\n    resultCount: sources.length,\n    metadata: {\n      executionTime,\n      toolCalls: searchQueries.length,\n      executionId: input.metadata?.executionId\n    }\n  }\n};"
       },
       "id": "format-output",
       "name": "Format Output",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [600, 300]
+      "position": [850, 200],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Handle validation error\nconst input = $input.first().json;\n\nreturn {\n  json: {\n    success: false,\n    agentType: 'web_search',\n    error: input.error || 'Validation failed',\n    errorCode: input.errorCode || 'VALIDATION_ERROR',\n    output: null,\n    sources: [],\n    metadata: {\n      executionId: $execution.id\n    }\n  }\n};"
+      },
+      "id": "format-error",
+      "name": "Format Error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [650, 400]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "return $input.all();"
+      },
+      "id": "merge-output",
+      "name": "Merge Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1000, 300]
     }
   ],
   "connections": {
     "Execute Workflow Trigger": {
-      "main": [[{ "node": "Search Agent", "type": "main", "index": 0 }]]
+      "main": [[{ "node": "Validate Input", "type": "main", "index": 0 }]]
+    },
+    "Validate Input": {
+      "main": [[{ "node": "Input Valid?", "type": "main", "index": 0 }]]
+    },
+    "Input Valid?": {
+      "main": [
+        [{ "node": "Search Agent", "type": "main", "index": 0 }],
+        [{ "node": "Format Error", "type": "main", "index": 0 }]
+      ]
     },
     "Search Agent": {
       "main": [[{ "node": "Format Output", "type": "main", "index": 0 }]]
@@ -81,7 +167,20 @@
     },
     "Wikipedia Tool": {
       "ai_tool": [[{ "node": "Search Agent", "type": "ai_tool", "index": 0 }]]
+    },
+    "Format Output": {
+      "main": [[{ "node": "Merge Output", "type": "main", "index": 0 }]]
+    },
+    "Format Error": {
+      "main": [[{ "node": "Merge Output", "type": "main", "index": 0 }]]
     }
   },
-  "settings": { "executionOrder": "v1" }
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "staticData": null,
+  "tags": ["agent", "search", "web", "production"],
+  "pinData": {}
 }
