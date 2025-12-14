@@ -1,0 +1,72 @@
+{
+  "name": "Browser Automation Agent",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "execute-trigger",
+      "name": "Execute Workflow Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1,
+      "position": [200, 300]
+    },
+    {
+      "parameters": {
+        "options": {
+          "systemMessage": "You are a Browser Automation Agent with Playwright MCP capabilities.\n\nYou can perform web automation tasks including:\n- Navigate to URLs\n- Click elements using selectors\n- Fill forms and input fields\n- Take screenshots\n- Extract text and data from pages\n- Wait for elements to load\n- Handle JavaScript-rendered content\n\nUse the playwright MCP tools available to accomplish the task.\nBe precise with selectors and handle potential errors gracefully.\n\nAfter completing the task, provide a summary of what was accomplished and any data extracted."
+        }
+      },
+      "id": "browser-agent",
+      "name": "Browser Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [400, 300]
+    },
+    {
+      "parameters": {
+        "modelId": { "__rl": true, "value": "gpt-4o", "mode": "list" },
+        "options": { "temperature": 0.3 }
+      },
+      "id": "browser-llm",
+      "name": "Browser LLM",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1,
+      "position": [400, 500]
+    },
+    {
+      "parameters": {
+        "serverUrl": "={{ $env.PLAYWRIGHT_MCP_URL || 'http://localhost:3002' }}"
+      },
+      "id": "playwright-mcp",
+      "name": "Playwright MCP",
+      "type": "@n8n/n8n-nodes-langchain.toolMcp",
+      "typeVersion": 1,
+      "position": [600, 500]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const result = $input.first().json;\n\nreturn {\n  json: {\n    success: true,\n    agentType: 'browser',\n    output: result.output,\n    screenshots: result.screenshots || [],\n    extractedData: result.extractedData || {},\n    url: result.lastUrl || null\n  }\n};"
+      },
+      "id": "format-output",
+      "name": "Format Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [600, 300]
+    }
+  ],
+  "connections": {
+    "Execute Workflow Trigger": {
+      "main": [[{ "node": "Browser Agent", "type": "main", "index": 0 }]]
+    },
+    "Browser Agent": {
+      "main": [[{ "node": "Format Output", "type": "main", "index": 0 }]]
+    },
+    "Browser LLM": {
+      "ai_languageModel": [[{ "node": "Browser Agent", "type": "ai_languageModel", "index": 0 }]]
+    },
+    "Playwright MCP": {
+      "ai_tool": [[{ "node": "Browser Agent", "type": "ai_tool", "index": 0 }]]
+    }
+  },
+  "settings": { "executionOrder": "v1" }
+}

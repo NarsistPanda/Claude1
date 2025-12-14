@@ -1,0 +1,102 @@
+{
+  "name": "RAG Search Agent",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "execute-trigger",
+      "name": "Execute Workflow Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1,
+      "position": [200, 300]
+    },
+    {
+      "parameters": {
+        "options": {
+          "systemMessage": "You are a RAG (Retrieval Augmented Generation) Search Agent.\n\nCapabilities:\n- Search internal knowledge base using semantic similarity\n- Retrieve relevant documents and context\n- Find past conversations and decisions\n- Locate procedural knowledge and patterns\n- Access domain-specific information\n\nMemory Types Available:\n1. Semantic Memory - Facts, knowledge, domain info\n2. Episodic Memory - Past sessions, conversations\n3. Procedural Memory - Patterns, workflows, best practices\n\nGuidelines:\n1. Formulate queries that capture semantic meaning\n2. Search across multiple memory types when appropriate\n3. Rank and filter results by relevance\n4. Provide context about source and recency\n5. Note confidence in retrieved information\n\nReturn the most relevant information with source citations."
+        }
+      },
+      "id": "rag-agent",
+      "name": "RAG Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [400, 300]
+    },
+    {
+      "parameters": {
+        "modelId": { "__rl": true, "value": "gpt-4o-mini", "mode": "list" },
+        "options": { "temperature": 0.2 }
+      },
+      "id": "rag-llm",
+      "name": "RAG LLM",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1,
+      "position": [400, 500]
+    },
+    {
+      "parameters": {
+        "name": "search_knowledge_base",
+        "description": "Search the semantic knowledge base. Input is a natural language query. Returns relevant documents with similarity scores.",
+        "topK": 5
+      },
+      "id": "vector-search-tool",
+      "name": "Vector Store Tool",
+      "type": "@n8n/n8n-nodes-langchain.toolVectorStore",
+      "typeVersion": 1,
+      "position": [550, 500]
+    },
+    {
+      "parameters": {
+        "qdrantCollection": { "__rl": true, "value": "agent_long_term_memory", "mode": "list" },
+        "options": {}
+      },
+      "id": "qdrant-store",
+      "name": "Qdrant Vector Store",
+      "type": "@n8n/n8n-nodes-langchain.vectorStoreQdrant",
+      "typeVersion": 1,
+      "position": [550, 650]
+    },
+    {
+      "parameters": {
+        "model": "text-embedding-3-small",
+        "options": {}
+      },
+      "id": "embeddings",
+      "name": "OpenAI Embeddings",
+      "type": "@n8n/n8n-nodes-langchain.embeddingsOpenAi",
+      "typeVersion": 1,
+      "position": [700, 650]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const result = $input.first().json;\n\nreturn {\n  json: {\n    success: true,\n    agentType: 'rag_search',\n    output: result.output,\n    retrievedDocuments: result.documents || [],\n    relevanceScores: result.scores || [],\n    memoryType: result.memoryType || 'semantic',\n    queryEmbedding: result.embedding || null\n  }\n};"
+      },
+      "id": "format-output",
+      "name": "Format Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [600, 300]
+    }
+  ],
+  "connections": {
+    "Execute Workflow Trigger": {
+      "main": [[{ "node": "RAG Agent", "type": "main", "index": 0 }]]
+    },
+    "RAG Agent": {
+      "main": [[{ "node": "Format Output", "type": "main", "index": 0 }]]
+    },
+    "RAG LLM": {
+      "ai_languageModel": [[{ "node": "RAG Agent", "type": "ai_languageModel", "index": 0 }]]
+    },
+    "Vector Store Tool": {
+      "ai_tool": [[{ "node": "RAG Agent", "type": "ai_tool", "index": 0 }]]
+    },
+    "Qdrant Vector Store": {
+      "ai_vectorStore": [[{ "node": "Vector Store Tool", "type": "ai_vectorStore", "index": 0 }]]
+    },
+    "OpenAI Embeddings": {
+      "ai_embedding": [[{ "node": "Qdrant Vector Store", "type": "ai_embedding", "index": 0 }]]
+    }
+  },
+  "settings": { "executionOrder": "v1" }
+}

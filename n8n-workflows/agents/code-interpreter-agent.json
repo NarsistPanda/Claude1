@@ -1,0 +1,75 @@
+{
+  "name": "Code Interpreter Agent",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "execute-trigger",
+      "name": "Execute Workflow Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1,
+      "position": [200, 300]
+    },
+    {
+      "parameters": {
+        "options": {
+          "systemMessage": "You are a Code Interpreter Agent that executes Python code.\n\nCapabilities:\n- Execute Python code for calculations, data analysis, and transformations\n- Install and use common packages (pandas, numpy, matplotlib, requests, etc.)\n- Process data structures (JSON, CSV, lists, dictionaries)\n- Generate visualizations\n- Perform mathematical computations\n\nGuidelines:\n1. Write clean, efficient Python code\n2. Handle errors gracefully with try/except\n3. Return results in structured format\n4. Include helpful comments in complex code\n5. Validate inputs before processing\n\nUse the Python code execution tool to run code.\nProvide the output and any relevant files generated."
+        }
+      },
+      "id": "code-agent",
+      "name": "Code Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [400, 300]
+    },
+    {
+      "parameters": {
+        "modelId": { "__rl": true, "value": "gpt-4o", "mode": "list" },
+        "options": { "temperature": 0.2 }
+      },
+      "id": "code-llm",
+      "name": "Code LLM",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1,
+      "position": [400, 500]
+    },
+    {
+      "parameters": {
+        "name": "execute_python",
+        "description": "Execute Python code. The code will run in an isolated environment with common packages available (pandas, numpy, matplotlib, requests, json, csv, datetime, math, re). Return print() output and any generated files.",
+        "language": "python",
+        "executeCode": true
+      },
+      "id": "python-tool",
+      "name": "Python Execution Tool",
+      "type": "@n8n/n8n-nodes-langchain.toolCode",
+      "typeVersion": 1,
+      "position": [600, 500]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const result = $input.first().json;\n\nreturn {\n  json: {\n    success: true,\n    agentType: 'code_interpreter',\n    output: result.output,\n    executionResult: result.executionResult || null,\n    generatedFiles: result.files || [],\n    variables: result.variables || {}\n  }\n};"
+      },
+      "id": "format-output",
+      "name": "Format Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [600, 300]
+    }
+  ],
+  "connections": {
+    "Execute Workflow Trigger": {
+      "main": [[{ "node": "Code Agent", "type": "main", "index": 0 }]]
+    },
+    "Code Agent": {
+      "main": [[{ "node": "Format Output", "type": "main", "index": 0 }]]
+    },
+    "Code LLM": {
+      "ai_languageModel": [[{ "node": "Code Agent", "type": "ai_languageModel", "index": 0 }]]
+    },
+    "Python Execution Tool": {
+      "ai_tool": [[{ "node": "Code Agent", "type": "ai_tool", "index": 0 }]]
+    }
+  },
+  "settings": { "executionOrder": "v1" }
+}

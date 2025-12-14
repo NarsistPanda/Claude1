@@ -1,0 +1,87 @@
+{
+  "name": "Web Search Agent",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "execute-trigger",
+      "name": "Execute Workflow Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1,
+      "position": [200, 300]
+    },
+    {
+      "parameters": {
+        "options": {
+          "systemMessage": "You are a Web Search Agent specialized in finding current information.\n\nCapabilities:\n- Perform web searches using multiple search engines\n- Find current news and recent information\n- Locate specific facts, statistics, and data\n- Search for technical documentation\n- Find company/product information\n\nGuidelines:\n1. Formulate precise search queries\n2. Verify information from multiple sources when possible\n3. Note the recency and reliability of sources\n4. Extract relevant snippets and key facts\n5. Provide source URLs for all information\n\nUse the search tools available to find the requested information.\nSummarize findings with source citations."
+        }
+      },
+      "id": "search-agent",
+      "name": "Search Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [400, 300]
+    },
+    {
+      "parameters": {
+        "modelId": { "__rl": true, "value": "gpt-4o-mini", "mode": "list" },
+        "options": { "temperature": 0.3 }
+      },
+      "id": "search-llm",
+      "name": "Search LLM",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1,
+      "position": [400, 500]
+    },
+    {
+      "parameters": {
+        "name": "web_search",
+        "description": "Search the web for information. Input should be a search query string. Returns relevant search results with titles, snippets, and URLs."
+      },
+      "id": "serpapi-tool",
+      "name": "SerpAPI Tool",
+      "type": "@n8n/n8n-nodes-langchain.toolSerpApi",
+      "typeVersion": 1,
+      "position": [550, 500]
+    },
+    {
+      "parameters": {
+        "name": "wikipedia_search",
+        "description": "Search Wikipedia for background information and general knowledge. Good for definitions, historical context, and encyclopedic information."
+      },
+      "id": "wikipedia-tool",
+      "name": "Wikipedia Tool",
+      "type": "@n8n/n8n-nodes-langchain.toolWikipedia",
+      "typeVersion": 1,
+      "position": [700, 500]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const result = $input.first().json;\n\nreturn {\n  json: {\n    success: true,\n    agentType: 'web_search',\n    output: result.output,\n    sources: result.sources || [],\n    searchQueries: result.searchQueries || [],\n    resultCount: result.resultCount || 0\n  }\n};"
+      },
+      "id": "format-output",
+      "name": "Format Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [600, 300]
+    }
+  ],
+  "connections": {
+    "Execute Workflow Trigger": {
+      "main": [[{ "node": "Search Agent", "type": "main", "index": 0 }]]
+    },
+    "Search Agent": {
+      "main": [[{ "node": "Format Output", "type": "main", "index": 0 }]]
+    },
+    "Search LLM": {
+      "ai_languageModel": [[{ "node": "Search Agent", "type": "ai_languageModel", "index": 0 }]]
+    },
+    "SerpAPI Tool": {
+      "ai_tool": [[{ "node": "Search Agent", "type": "ai_tool", "index": 0 }]]
+    },
+    "Wikipedia Tool": {
+      "ai_tool": [[{ "node": "Search Agent", "type": "ai_tool", "index": 0 }]]
+    }
+  },
+  "settings": { "executionOrder": "v1" }
+}

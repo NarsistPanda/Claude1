@@ -1,0 +1,402 @@
+{
+  "name": "Multi-Agent ReAct Orchestrator",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "multi-agent-chat",
+        "responseMode": "responseNode",
+        "options": {
+          "responseHeaders": {
+            "entries": [
+              { "name": "Access-Control-Allow-Origin", "value": "*" },
+              { "name": "Content-Type", "value": "text/event-stream" }
+            ]
+          }
+        }
+      },
+      "id": "webhook-main",
+      "name": "Main Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [200, 400],
+      "webhookId": "multi-agent-chat"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Initialize state and extract input\nconst input = $input.first().json;\n\nconst state = {\n  sessionId: input.sessionId || $execution.id,\n  userQuery: input.chatInput,\n  history: input.history || [],\n  phase: 'planning',\n  plan: null,\n  currentStep: 0,\n  stepResults: [],\n  iterations: 0,\n  maxIterations: 5,\n  events: [],\n  startTime: Date.now()\n};\n\n// Emit RUN_STARTED event\nstate.events.push({\n  type: 'RUN_STARTED',\n  runId: $execution.id,\n  threadId: state.sessionId,\n  timestamp: new Date().toISOString()\n});\n\nreturn { json: state };"
+      },
+      "id": "init-state",
+      "name": "Initialize State",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [400, 400]
+    },
+    {
+      "parameters": {
+        "options": {
+          "systemMessage": "You are the PLANNING AGENT in a multi-agent system.\n\nYour ONLY job is to analyze the user's request and create a detailed execution plan.\n\nYou must output a JSON plan with this exact structure:\n{\n  \"goal\": \"Clear statement of what needs to be achieved\",\n  \"complexity\": \"low|medium|high\",\n  \"steps\": [\n    {\n      \"id\": \"step_1\",\n      \"description\": \"What this step accomplishes\",\n      \"tool\": \"browser|code_interpreter|web_search|deep_research|rag_search|none\",\n      \"toolInput\": \"Specific input for the tool\",\n      \"expectedOutput\": \"What we expect to get\",\n      \"dependsOn\": []\n    }\n  ],\n  \"successCriteria\": \"How to know if the task is complete\"\n}\n\nAvailable tools:\n- browser: Web automation with Playwright (navigate, click, fill forms, scrape)\n- code_interpreter: Execute Python code for calculations, data processing\n- web_search: Quick web search for current information\n- deep_research: Comprehensive multi-source research on a topic\n- rag_search: Search internal knowledge base\n- none: Pure reasoning/synthesis step\n\nIMPORTANT:\n1. Break complex tasks into 3-7 manageable steps\n2. Identify dependencies between steps\n3. Choose the most appropriate tool for each step\n4. Be specific in toolInput - it will be passed directly to the tool\n\nOutput ONLY the JSON plan, no other text."
+        }
+      },
+      "id": "planning-agent",
+      "name": "Planning Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [600, 400]
+    },
+    {
+      "parameters": {
+        "modelId": { "__rl": true, "value": "gpt-4o", "mode": "list" },
+        "options": { "temperature": 0.3 }
+      },
+      "id": "planner-llm",
+      "name": "Planner LLM",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1,
+      "position": [600, 600]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Parse planning agent output and update state\nconst state = $('Initialize State').first().json;\nconst plannerOutput = $input.first().json.output;\n\ntry {\n  // Extract JSON from the planner output\n  const jsonMatch = plannerOutput.match(/\\{[\\s\\S]*\\}/);\n  if (!jsonMatch) throw new Error('No JSON found in planner output');\n  \n  const plan = JSON.parse(jsonMatch[0]);\n  state.plan = plan;\n  state.phase = 'executing';\n  \n  // Emit STEP_STARTED for planning\n  state.events.push({\n    type: 'STEP_STARTED',\n    stepId: 'planning',\n    stepName: 'Creating execution plan',\n    stepType: 'planning',\n    timestamp: new Date().toISOString()\n  });\n  \n  // Emit STATE_DELTA with the plan\n  state.events.push({\n    type: 'STATE_DELTA',\n    delta: [\n      { op: 'replace', path: '/phase', value: 'executing' },\n      { op: 'add', path: '/plan', value: plan }\n    ],\n    timestamp: new Date().toISOString()\n  });\n  \n  // Emit STEP_FINISHED for planning\n  state.events.push({\n    type: 'STEP_FINISHED',\n    stepId: 'planning',\n    status: 'complete',\n    result: { stepsCount: plan.steps.length },\n    timestamp: new Date().toISOString()\n  });\n  \n} catch (error) {\n  state.error = `Failed to parse plan: ${error.message}`;\n  state.phase = 'error';\n}\n\nreturn { json: state };"
+      },
+      "id": "parse-plan",
+      "name": "Parse Plan",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [800, 400]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            {
+              "id": "check-more-steps",
+              "leftValue": "={{ $json.currentStep < $json.plan.steps.length && $json.iterations < $json.maxIterations }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "equals" }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "check-steps",
+      "name": "More Steps?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1000, 400]
+    },
+    {
+      "parameters": {
+        "options": {
+          "systemMessage": "You are the MANAGER AGENT orchestrating task execution.\n\nYou have access to these specialized tool agents:\n1. browser_agent - Web automation with Playwright\n2. code_interpreter_agent - Python code execution\n3. web_search_agent - Quick web searches\n4. deep_research_agent - Comprehensive research\n5. rag_search_agent - Internal knowledge base search\n\nCurrent step to execute:\n{{ $json.plan.steps[$json.currentStep].description }}\n\nTool to use: {{ $json.plan.steps[$json.currentStep].tool }}\nTool input: {{ $json.plan.steps[$json.currentStep].toolInput }}\n\nCall the appropriate tool agent with the given input.\nAfter receiving the result, provide a brief summary of what was accomplished.\n\nIMPORTANT: Always call the tool before responding. Do not skip tool calls."
+        }
+      },
+      "id": "manager-agent",
+      "name": "Manager Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [1200, 300]
+    },
+    {
+      "parameters": {
+        "modelId": { "__rl": true, "value": "gpt-4o", "mode": "list" },
+        "options": { "temperature": 0.5 }
+      },
+      "id": "manager-llm",
+      "name": "Manager LLM",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1,
+      "position": [1200, 500]
+    },
+    {
+      "parameters": {
+        "name": "browser_agent",
+        "description": "Executes browser automation tasks using Playwright. Can navigate to URLs, click elements, fill forms, take screenshots, and scrape web content. Input should describe the browser action to perform.",
+        "workflowId": { "__rl": true, "value": "={{ $env.BROWSER_AGENT_WORKFLOW_ID }}", "mode": "id" }
+      },
+      "id": "tool-browser",
+      "name": "Browser Agent Tool",
+      "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+      "typeVersion": 1.1,
+      "position": [1100, 700]
+    },
+    {
+      "parameters": {
+        "name": "code_interpreter_agent",
+        "description": "Executes Python code for calculations, data processing, analysis, and transformations. Input should be the Python code to execute or a description of what calculation/processing is needed.",
+        "workflowId": { "__rl": true, "value": "={{ $env.CODE_AGENT_WORKFLOW_ID }}", "mode": "id" }
+      },
+      "id": "tool-code",
+      "name": "Code Interpreter Tool",
+      "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+      "typeVersion": 1.1,
+      "position": [1200, 700]
+    },
+    {
+      "parameters": {
+        "name": "web_search_agent",
+        "description": "Performs quick web searches to find current information, news, or facts. Input should be the search query.",
+        "workflowId": { "__rl": true, "value": "={{ $env.SEARCH_AGENT_WORKFLOW_ID }}", "mode": "id" }
+      },
+      "id": "tool-search",
+      "name": "Web Search Tool",
+      "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+      "typeVersion": 1.1,
+      "position": [1300, 700]
+    },
+    {
+      "parameters": {
+        "name": "deep_research_agent",
+        "description": "Conducts comprehensive multi-source research on complex topics. Synthesizes information from multiple sources. Input should be the research topic or question.",
+        "workflowId": { "__rl": true, "value": "={{ $env.RESEARCH_AGENT_WORKFLOW_ID }}", "mode": "id" }
+      },
+      "id": "tool-research",
+      "name": "Deep Research Tool",
+      "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+      "typeVersion": 1.1,
+      "position": [1400, 700]
+    },
+    {
+      "parameters": {
+        "name": "rag_search_agent",
+        "description": "Searches the internal knowledge base using semantic similarity. Good for finding relevant context from documents and past conversations. Input should be the search query.",
+        "workflowId": { "__rl": true, "value": "={{ $env.RAG_AGENT_WORKFLOW_ID }}", "mode": "id" }
+      },
+      "id": "tool-rag",
+      "name": "RAG Search Tool",
+      "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+      "typeVersion": 1.1,
+      "position": [1500, 700]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Process manager agent result and update state\nconst prevState = $('More Steps?').first().json;\nconst managerOutput = $input.first().json;\n\nconst state = { ...prevState };\nconst currentStep = state.plan.steps[state.currentStep];\n\n// Record step result\nconst stepResult = {\n  stepId: currentStep.id,\n  description: currentStep.description,\n  tool: currentStep.tool,\n  result: managerOutput.output,\n  toolCalls: managerOutput.toolCalls || [],\n  completedAt: new Date().toISOString()\n};\n\nstate.stepResults.push(stepResult);\n\n// Emit TOOL_CALL events for each tool used\nif (managerOutput.toolCalls) {\n  for (const toolCall of managerOutput.toolCalls) {\n    state.events.push({\n      type: 'TOOL_CALL_START',\n      toolCallId: toolCall.id || `tool_${Date.now()}`,\n      toolCallName: toolCall.name,\n      timestamp: new Date().toISOString()\n    });\n    \n    state.events.push({\n      type: 'TOOL_CALL_RESULT',\n      toolCallId: toolCall.id || `tool_${Date.now()}`,\n      result: JSON.stringify(toolCall.result).slice(0, 500),\n      timestamp: new Date().toISOString()\n    });\n  }\n}\n\n// Emit STEP_FINISHED\nstate.events.push({\n  type: 'STEP_FINISHED',\n  stepId: currentStep.id,\n  status: 'complete',\n  result: { summary: managerOutput.output.slice(0, 200) },\n  timestamp: new Date().toISOString()\n});\n\n// Move to next step\nstate.currentStep++;\nstate.iterations++;\n\n// Emit STATE_DELTA\nstate.events.push({\n  type: 'STATE_DELTA',\n  delta: [\n    { op: 'replace', path: '/plan/currentStepIndex', value: state.currentStep },\n    { op: 'add', path: '/stepResults/-', value: stepResult }\n  ],\n  timestamp: new Date().toISOString()\n});\n\n// Emit next STEP_STARTED if more steps\nif (state.currentStep < state.plan.steps.length) {\n  const nextStep = state.plan.steps[state.currentStep];\n  state.events.push({\n    type: 'STEP_STARTED',\n    stepId: nextStep.id,\n    stepName: nextStep.description,\n    stepType: nextStep.tool,\n    timestamp: new Date().toISOString()\n  });\n}\n\nreturn { json: state };"
+      },
+      "id": "process-step-result",
+      "name": "Process Step Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1400, 300]
+    },
+    {
+      "parameters": {
+        "options": {
+          "systemMessage": "You are the QUALITY CONTROL AGENT.\n\nYour job is to review the execution results and determine if the task was completed successfully.\n\nOriginal Goal: {{ $json.plan.goal }}\nSuccess Criteria: {{ $json.plan.successCriteria }}\n\nStep Results:\n{{ JSON.stringify($json.stepResults, null, 2) }}\n\nEvaluate the results and output a JSON response:\n{\n  \"approved\": true/false,\n  \"qualityScore\": 1-10,\n  \"issues\": [\"list of any issues found\"],\n  \"suggestions\": [\"list of improvement suggestions\"],\n  \"requiresRevision\": true/false,\n  \"revisionInstructions\": \"If revision needed, explain what to fix\",\n  \"finalSummary\": \"Comprehensive summary of the completed work\"\n}\n\nBe thorough but fair. Only reject if there are critical issues.\nOutput ONLY the JSON, no other text."
+        }
+      },
+      "id": "qc-agent",
+      "name": "Quality Control Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [1200, 500]
+    },
+    {
+      "parameters": {
+        "modelId": { "__rl": true, "value": "gpt-4o", "mode": "list" },
+        "options": { "temperature": 0.2 }
+      },
+      "id": "qc-llm",
+      "name": "QC LLM",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1,
+      "position": [1200, 700]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Parse QC result and finalize\nconst state = $('More Steps?').first().json;\nconst qcOutput = $input.first().json.output;\n\ntry {\n  const jsonMatch = qcOutput.match(/\\{[\\s\\S]*\\}/);\n  if (!jsonMatch) throw new Error('No JSON in QC output');\n  \n  const qcResult = JSON.parse(jsonMatch[0]);\n  state.qcResult = qcResult;\n  state.phase = qcResult.approved ? 'complete' : 'revision_needed';\n  \n  // Emit QC step events\n  state.events.push({\n    type: 'STEP_STARTED',\n    stepId: 'quality_control',\n    stepName: 'Quality Control Review',\n    stepType: 'review',\n    timestamp: new Date().toISOString()\n  });\n  \n  state.events.push({\n    type: 'STEP_FINISHED',\n    stepId: 'quality_control',\n    status: qcResult.approved ? 'complete' : 'failed',\n    result: {\n      qualityScore: qcResult.qualityScore,\n      approved: qcResult.approved\n    },\n    timestamp: new Date().toISOString()\n  });\n  \n  // Emit final STATE_DELTA\n  state.events.push({\n    type: 'STATE_DELTA',\n    delta: [\n      { op: 'replace', path: '/phase', value: state.phase },\n      { op: 'add', path: '/qualityScore', value: qcResult.qualityScore }\n    ],\n    timestamp: new Date().toISOString()\n  });\n  \n} catch (error) {\n  state.error = `QC parsing failed: ${error.message}`;\n  state.phase = 'error';\n}\n\nreturn { json: state };"
+      },
+      "id": "parse-qc",
+      "name": "Parse QC Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1400, 500]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            {
+              "id": "check-revision",
+              "leftValue": "={{ $json.qcResult.requiresRevision && $json.iterations < $json.maxIterations }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "equals" }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "check-revision",
+      "name": "Needs Revision?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1600, 500]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Generate final response with all events\nconst state = $json;\n\n// Emit RUN_FINISHED\nstate.events.push({\n  type: 'RUN_FINISHED',\n  runId: $execution.id,\n  threadId: state.sessionId,\n  status: state.phase === 'complete' ? 'success' : 'error',\n  timestamp: new Date().toISOString()\n});\n\n// Build final output\nconst finalResponse = {\n  output: state.qcResult?.finalSummary || 'Task completed.',\n  plan: state.plan,\n  stepResults: state.stepResults,\n  qualityScore: state.qcResult?.qualityScore,\n  iterations: state.iterations,\n  events: state.events,\n  executionTime: Date.now() - state.startTime\n};\n\nreturn { json: finalResponse };"
+      },
+      "id": "generate-response",
+      "name": "Generate Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1800, 400]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Reset for revision loop\nconst state = $json;\nstate.currentStep = 0;\nstate.stepResults = [];\nstate.phase = 'executing';\n\n// Emit revision started\nstate.events.push({\n  type: 'STEP_STARTED',\n  stepId: 'revision',\n  stepName: 'Executing revision based on QC feedback',\n  stepType: 'revision',\n  timestamp: new Date().toISOString()\n});\n\nreturn { json: state };"
+      },
+      "id": "prepare-revision",
+      "name": "Prepare Revision",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1800, 600]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {}
+      },
+      "id": "respond-webhook",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [2000, 400]
+    },
+    {
+      "parameters": {
+        "sessionIdType": "customKey",
+        "sessionKey": "={{ $json.sessionId }}",
+        "contextWindowLength": 20
+      },
+      "id": "short-term-memory",
+      "name": "Short-Term Memory",
+      "type": "@n8n/n8n-nodes-langchain.memoryBufferWindow",
+      "typeVersion": 1.2,
+      "position": [500, 600]
+    },
+    {
+      "parameters": {
+        "qdrantCollection": { "__rl": true, "value": "agent_long_term_memory", "mode": "list" },
+        "options": {}
+      },
+      "id": "long-term-memory",
+      "name": "Long-Term Memory (Qdrant)",
+      "type": "@n8n/n8n-nodes-langchain.memoryVectorStore",
+      "typeVersion": 1,
+      "position": [500, 750]
+    },
+    {
+      "parameters": {
+        "model": "text-embedding-3-small",
+        "options": {}
+      },
+      "id": "embeddings",
+      "name": "OpenAI Embeddings",
+      "type": "@n8n/n8n-nodes-langchain.embeddingsOpenAi",
+      "typeVersion": 1,
+      "position": [500, 900]
+    },
+    {
+      "parameters": {
+        "qdrantCollection": { "__rl": true, "value": "agent_long_term_memory", "mode": "list" },
+        "options": {}
+      },
+      "id": "qdrant-store",
+      "name": "Qdrant Vector Store",
+      "type": "@n8n/n8n-nodes-langchain.vectorStoreQdrant",
+      "typeVersion": 1,
+      "position": [700, 750]
+    }
+  ],
+  "connections": {
+    "Main Webhook": {
+      "main": [[{ "node": "Initialize State", "type": "main", "index": 0 }]]
+    },
+    "Initialize State": {
+      "main": [[{ "node": "Planning Agent", "type": "main", "index": 0 }]]
+    },
+    "Planning Agent": {
+      "main": [[{ "node": "Parse Plan", "type": "main", "index": 0 }]]
+    },
+    "Planner LLM": {
+      "ai_languageModel": [[{ "node": "Planning Agent", "type": "ai_languageModel", "index": 0 }]]
+    },
+    "Short-Term Memory": {
+      "ai_memory": [[{ "node": "Planning Agent", "type": "ai_memory", "index": 0 }]]
+    },
+    "Parse Plan": {
+      "main": [[{ "node": "More Steps?", "type": "main", "index": 0 }]]
+    },
+    "More Steps?": {
+      "main": [
+        [{ "node": "Manager Agent", "type": "main", "index": 0 }],
+        [{ "node": "Quality Control Agent", "type": "main", "index": 0 }]
+      ]
+    },
+    "Manager Agent": {
+      "main": [[{ "node": "Process Step Result", "type": "main", "index": 0 }]]
+    },
+    "Manager LLM": {
+      "ai_languageModel": [[{ "node": "Manager Agent", "type": "ai_languageModel", "index": 0 }]]
+    },
+    "Browser Agent Tool": {
+      "ai_tool": [[{ "node": "Manager Agent", "type": "ai_tool", "index": 0 }]]
+    },
+    "Code Interpreter Tool": {
+      "ai_tool": [[{ "node": "Manager Agent", "type": "ai_tool", "index": 0 }]]
+    },
+    "Web Search Tool": {
+      "ai_tool": [[{ "node": "Manager Agent", "type": "ai_tool", "index": 0 }]]
+    },
+    "Deep Research Tool": {
+      "ai_tool": [[{ "node": "Manager Agent", "type": "ai_tool", "index": 0 }]]
+    },
+    "RAG Search Tool": {
+      "ai_tool": [[{ "node": "Manager Agent", "type": "ai_tool", "index": 0 }]]
+    },
+    "Process Step Result": {
+      "main": [[{ "node": "More Steps?", "type": "main", "index": 0 }]]
+    },
+    "Quality Control Agent": {
+      "main": [[{ "node": "Parse QC Result", "type": "main", "index": 0 }]]
+    },
+    "QC LLM": {
+      "ai_languageModel": [[{ "node": "Quality Control Agent", "type": "ai_languageModel", "index": 0 }]]
+    },
+    "Parse QC Result": {
+      "main": [[{ "node": "Needs Revision?", "type": "main", "index": 0 }]]
+    },
+    "Needs Revision?": {
+      "main": [
+        [{ "node": "Generate Response", "type": "main", "index": 0 }],
+        [{ "node": "Prepare Revision", "type": "main", "index": 0 }]
+      ]
+    },
+    "Generate Response": {
+      "main": [[{ "node": "Respond to Webhook", "type": "main", "index": 0 }]]
+    },
+    "Prepare Revision": {
+      "main": [[{ "node": "More Steps?", "type": "main", "index": 0 }]]
+    },
+    "OpenAI Embeddings": {
+      "ai_embedding": [[{ "node": "Qdrant Vector Store", "type": "ai_embedding", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": ["multi-agent", "react", "orchestration"],
+  "triggerCount": 0
+}

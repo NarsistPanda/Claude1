@@ -1,11 +1,18 @@
 import { Response } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { AGUIEventEncoder } from './encoder.js';
-import { RunAgentInput, Message, N8nWebhookResponse } from './types.js';
+import {
+  RunAgentInput,
+  Message,
+  N8nWebhookResponse,
+  N8nAgentEvent,
+  N8nMultiAgentResponse
+} from './types.js';
 
 /**
  * N8n Agent Bridge
  * Connects n8n webhooks to the AG-UI protocol
+ * Supports multi-agent orchestration with ReAct pattern
  */
 export class N8nAgentBridge {
   private webhookUrl: string;
@@ -18,11 +25,9 @@ export class N8nAgentBridge {
    * Format messages for n8n webhook
    */
   private formatMessagesForN8n(messages: Message[]): { chatInput: string; history: Array<{ role: string; content: string }> } {
-    // Get the last user message as the main input
     const lastUserMessage = [...messages].reverse().find(m => m.role === 'user');
     const chatInput = lastUserMessage?.content || '';
 
-    // Format history for n8n (excluding the last user message)
     const history = messages
       .slice(0, -1)
       .filter(m => m.content)
@@ -36,6 +41,7 @@ export class N8nAgentBridge {
 
   /**
    * Stream response from n8n to AG-UI events
+   * Supports both simple and multi-agent orchestration responses
    */
   async streamToAGUI(input: RunAgentInput, encoder: AGUIEventEncoder, res: Response): Promise<void> {
     const { threadId, runId, messages, forwardedProps } = input;
@@ -44,25 +50,19 @@ export class N8nAgentBridge {
     // Emit RUN_STARTED
     res.write(encoder.encodeRunStarted(threadId, runId));
 
-    // Emit TEXT_MESSAGE_START
-    res.write(encoder.encodeTextMessageStart(messageId, 'assistant'));
-
     try {
       const { chatInput, history } = this.formatMessagesForN8n(messages);
 
-      // Build request body for n8n webhook
       const requestBody: Record<string, unknown> = {
         chatInput,
         sessionId: threadId,
         ...forwardedProps
       };
 
-      // Include history if available
       if (history.length > 0) {
         requestBody.history = history;
       }
 
-      // Make request to n8n webhook
       const response = await fetch(this.webhookUrl, {
         method: 'POST',
         headers: {
@@ -78,30 +78,17 @@ export class N8nAgentBridge {
 
       const contentType = response.headers.get('content-type') || '';
 
-      // Handle streaming response from n8n
       if (contentType.includes('text/event-stream') && response.body) {
-        await this.handleStreamingResponse(response, encoder, res, messageId);
+        await this.handleStreamingResponse(response, encoder, res, messageId, threadId, runId);
       } else {
-        // Handle non-streaming JSON response
-        await this.handleJsonResponse(response, encoder, res, messageId);
+        await this.handleJsonResponse(response, encoder, res, messageId, threadId, runId);
       }
-
-      // Emit TEXT_MESSAGE_END
-      res.write(encoder.encodeTextMessageEnd(messageId));
-
-      // Emit RUN_FINISHED
-      res.write(encoder.encodeRunFinished(threadId, runId));
 
     } catch (error) {
       console.error('Error calling n8n webhook:', error);
-
-      // Emit error message as text
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      res.write(encoder.encodeTextMessageContent(messageId, `Error: ${errorMessage}`));
-      res.write(encoder.encodeTextMessageEnd(messageId));
-
-      // Emit RUN_ERROR
       res.write(encoder.encodeError(errorMessage));
+      res.write(encoder.encodeRunFinished(threadId, runId, 'error'));
     }
   }
 
@@ -112,11 +99,14 @@ export class N8nAgentBridge {
     response: globalThis.Response,
     encoder: AGUIEventEncoder,
     res: Response,
-    messageId: string
+    messageId: string,
+    threadId: string,
+    runId: string
   ): Promise<void> {
     const reader = response.body!.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
+    let textMessageStarted = false;
 
     try {
       while (true) {
@@ -134,27 +124,53 @@ export class N8nAgentBridge {
 
             try {
               const parsed = JSON.parse(data);
-              const content = this.extractContentFromN8nChunk(parsed);
-              if (content) {
-                res.write(encoder.encodeTextMessageContent(messageId, content));
+
+              // Check if this is an AG-UI event from n8n
+              if (parsed.type && this.isN8nAgentEvent(parsed)) {
+                res.write(encoder.encodeN8nEvent(parsed as N8nAgentEvent));
+              } else {
+                // Regular content chunk
+                const content = this.extractContentFromN8nChunk(parsed);
+                if (content) {
+                  if (!textMessageStarted) {
+                    res.write(encoder.encodeTextMessageStart(messageId, 'assistant'));
+                    textMessageStarted = true;
+                  }
+                  res.write(encoder.encodeTextMessageContent(messageId, content));
+                }
               }
             } catch {
-              // If not JSON, treat as plain text
               if (data) {
+                if (!textMessageStarted) {
+                  res.write(encoder.encodeTextMessageStart(messageId, 'assistant'));
+                  textMessageStarted = true;
+                }
                 res.write(encoder.encodeTextMessageContent(messageId, data));
               }
             }
           } else if (line.trim() && !line.startsWith(':')) {
-            // Handle non-SSE formatted streaming text
+            if (!textMessageStarted) {
+              res.write(encoder.encodeTextMessageStart(messageId, 'assistant'));
+              textMessageStarted = true;
+            }
             res.write(encoder.encodeTextMessageContent(messageId, line));
           }
         }
       }
 
-      // Process remaining buffer
       if (buffer.trim()) {
+        if (!textMessageStarted) {
+          res.write(encoder.encodeTextMessageStart(messageId, 'assistant'));
+          textMessageStarted = true;
+        }
         res.write(encoder.encodeTextMessageContent(messageId, buffer));
       }
+
+      if (textMessageStarted) {
+        res.write(encoder.encodeTextMessageEnd(messageId));
+      }
+      res.write(encoder.encodeRunFinished(threadId, runId, 'success'));
+
     } finally {
       reader.releaseLock();
     }
@@ -162,30 +178,123 @@ export class N8nAgentBridge {
 
   /**
    * Handle JSON response from n8n (non-streaming)
+   * Supports multi-agent orchestration response format
    */
   private async handleJsonResponse(
     response: globalThis.Response,
     encoder: AGUIEventEncoder,
     res: Response,
-    messageId: string
+    messageId: string,
+    threadId: string,
+    runId: string
   ): Promise<void> {
-    const data = await response.json() as N8nWebhookResponse | N8nWebhookResponse[];
+    const data = await response.json() as N8nWebhookResponse | N8nWebhookResponse[] | N8nMultiAgentResponse;
 
-    // n8n can return array or single object
+    // Handle array response
     const result = Array.isArray(data) ? data[0] : data;
-    const content = this.extractContentFromN8nResponse(result);
 
-    if (content) {
-      // Stream the content character by character for better UX
-      // Or send it all at once if streaming is not desired
-      const chunkSize = 20; // Characters per chunk
-      for (let i = 0; i < content.length; i += chunkSize) {
-        const chunk = content.slice(i, i + chunkSize);
-        res.write(encoder.encodeTextMessageContent(messageId, chunk));
-        // Small delay to simulate streaming
-        await new Promise(resolve => setTimeout(resolve, 10));
+    // Check if this is a multi-agent orchestration response
+    if (this.isMultiAgentResponse(result)) {
+      await this.handleMultiAgentResponse(result as N8nMultiAgentResponse, encoder, res, messageId, threadId, runId);
+    } else {
+      // Simple response - just extract content
+      res.write(encoder.encodeTextMessageStart(messageId, 'assistant'));
+
+      const content = this.extractContentFromN8nResponse(result as N8nWebhookResponse);
+      if (content) {
+        const chunkSize = 20;
+        for (let i = 0; i < content.length; i += chunkSize) {
+          const chunk = content.slice(i, i + chunkSize);
+          res.write(encoder.encodeTextMessageContent(messageId, chunk));
+          await new Promise(resolve => setTimeout(resolve, 10));
+        }
+      }
+
+      res.write(encoder.encodeTextMessageEnd(messageId));
+      res.write(encoder.encodeRunFinished(threadId, runId, 'success'));
+    }
+  }
+
+  /**
+   * Handle multi-agent orchestration response
+   * Emits all events from the orchestration including planning, tool calls, and QC
+   */
+  private async handleMultiAgentResponse(
+    response: N8nMultiAgentResponse,
+    encoder: AGUIEventEncoder,
+    res: Response,
+    messageId: string,
+    threadId: string,
+    runId: string
+  ): Promise<void> {
+    // Emit all events from the orchestration
+    if (response.events && Array.isArray(response.events)) {
+      for (const event of response.events) {
+        const encoded = encoder.encodeN8nEvent(event);
+        if (encoded) {
+          res.write(encoded);
+          // Small delay between events for smooth streaming
+          await new Promise(resolve => setTimeout(resolve, 50));
+        }
       }
     }
+
+    // Emit state snapshot with plan and results
+    if (response.plan || response.stepResults) {
+      res.write(encoder.encodeStateSnapshot({
+        plan: response.plan,
+        stepResults: response.stepResults,
+        qualityScore: response.qualityScore,
+        iterations: response.iterations,
+        executionTime: response.executionTime
+      }));
+    }
+
+    // Emit final text message with output
+    res.write(encoder.encodeTextMessageStart(messageId, 'assistant'));
+
+    const output = response.output || response.qcResult?.finalSummary || '';
+    if (output) {
+      const chunkSize = 30;
+      for (let i = 0; i < output.length; i += chunkSize) {
+        const chunk = output.slice(i, i + chunkSize);
+        res.write(encoder.encodeTextMessageContent(messageId, chunk));
+        await new Promise(resolve => setTimeout(resolve, 15));
+      }
+    }
+
+    res.write(encoder.encodeTextMessageEnd(messageId));
+    res.write(encoder.encodeRunFinished(threadId, runId, 'success'));
+  }
+
+  /**
+   * Check if response is from multi-agent orchestration
+   */
+  private isMultiAgentResponse(data: unknown): boolean {
+    if (typeof data !== 'object' || data === null) return false;
+    const obj = data as Record<string, unknown>;
+    return (
+      Array.isArray(obj.events) ||
+      obj.plan !== undefined ||
+      obj.stepResults !== undefined ||
+      obj.qcResult !== undefined
+    );
+  }
+
+  /**
+   * Check if data is an AG-UI agent event
+   */
+  private isN8nAgentEvent(data: unknown): boolean {
+    if (typeof data !== 'object' || data === null) return false;
+    const obj = data as Record<string, unknown>;
+    const eventTypes = [
+      'RUN_STARTED', 'RUN_FINISHED', 'RUN_ERROR',
+      'STEP_STARTED', 'STEP_FINISHED',
+      'TOOL_CALL_START', 'TOOL_CALL_ARGS', 'TOOL_CALL_END', 'TOOL_CALL_RESULT',
+      'STATE_SNAPSHOT', 'STATE_DELTA',
+      'TEXT_MESSAGE_START', 'TEXT_MESSAGE_CONTENT', 'TEXT_MESSAGE_END'
+    ];
+    return typeof obj.type === 'string' && eventTypes.includes(obj.type);
   }
 
   /**
@@ -197,7 +306,6 @@ export class N8nAgentBridge {
     if (typeof chunk === 'object' && chunk !== null) {
       const obj = chunk as Record<string, unknown>;
 
-      // Handle various n8n output formats
       if (typeof obj.content === 'string') return obj.content;
       if (typeof obj.text === 'string') return obj.text;
       if (typeof obj.message === 'string') return obj.message;
@@ -221,7 +329,6 @@ export class N8nAgentBridge {
    * Extract content from n8n JSON response
    */
   private extractContentFromN8nResponse(response: N8nWebhookResponse): string {
-    // Try various common output field names used by n8n AI agents
     return response.output ||
            response.text ||
            response.message ||

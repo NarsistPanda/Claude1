@@ -1,0 +1,115 @@
+{
+  "name": "Deep Research Agent",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "execute-trigger",
+      "name": "Execute Workflow Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1,
+      "position": [200, 300]
+    },
+    {
+      "parameters": {
+        "options": {
+          "systemMessage": "You are a Deep Research Agent specialized in comprehensive research tasks.\n\nCapabilities:\n- Conduct multi-source research on complex topics\n- Synthesize information from various sources\n- Identify contradictions and consensus across sources\n- Provide detailed analysis with citations\n- Create structured research reports\n\nResearch Process:\n1. Understand the research question fully\n2. Identify key aspects to investigate\n3. Search multiple sources for each aspect\n4. Cross-reference and verify information\n5. Synthesize findings into coherent analysis\n6. Note confidence levels and source quality\n\nOutput Format:\n- Executive Summary\n- Key Findings (with sources)\n- Detailed Analysis\n- Confidence Assessment\n- Recommendations for further research\n\nUse all available tools to conduct thorough research."
+        }
+      },
+      "id": "research-agent",
+      "name": "Research Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [400, 300]
+    },
+    {
+      "parameters": {
+        "modelId": { "__rl": true, "value": "gpt-4o", "mode": "list" },
+        "options": { "temperature": 0.4 }
+      },
+      "id": "research-llm",
+      "name": "Research LLM",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1,
+      "position": [400, 550]
+    },
+    {
+      "parameters": {
+        "name": "web_search",
+        "description": "Search the web for current information"
+      },
+      "id": "serpapi-tool",
+      "name": "SerpAPI Tool",
+      "type": "@n8n/n8n-nodes-langchain.toolSerpApi",
+      "typeVersion": 1,
+      "position": [500, 550]
+    },
+    {
+      "parameters": {
+        "name": "wikipedia",
+        "description": "Search Wikipedia for background and encyclopedic information"
+      },
+      "id": "wikipedia-tool",
+      "name": "Wikipedia Tool",
+      "type": "@n8n/n8n-nodes-langchain.toolWikipedia",
+      "typeVersion": 1,
+      "position": [600, 550]
+    },
+    {
+      "parameters": {
+        "name": "fetch_webpage",
+        "description": "Fetch and extract content from a specific URL. Use this to read full articles or documentation pages."
+      },
+      "id": "http-tool",
+      "name": "HTTP Request Tool",
+      "type": "@n8n/n8n-nodes-langchain.toolHttpRequest",
+      "typeVersion": 1,
+      "position": [700, 550]
+    },
+    {
+      "parameters": {
+        "name": "think_step_by_step",
+        "description": "Use this tool to think through complex research questions step by step before searching."
+      },
+      "id": "thinking-tool",
+      "name": "Think Tool",
+      "type": "@n8n/n8n-nodes-langchain.toolThink",
+      "typeVersion": 1,
+      "position": [800, 550]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const result = $input.first().json;\n\nreturn {\n  json: {\n    success: true,\n    agentType: 'deep_research',\n    output: result.output,\n    sources: result.sources || [],\n    researchDepth: 'comprehensive',\n    topicsExplored: result.topicsExplored || [],\n    confidenceLevel: result.confidenceLevel || 'medium'\n  }\n};"
+      },
+      "id": "format-output",
+      "name": "Format Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [600, 300]
+    }
+  ],
+  "connections": {
+    "Execute Workflow Trigger": {
+      "main": [[{ "node": "Research Agent", "type": "main", "index": 0 }]]
+    },
+    "Research Agent": {
+      "main": [[{ "node": "Format Output", "type": "main", "index": 0 }]]
+    },
+    "Research LLM": {
+      "ai_languageModel": [[{ "node": "Research Agent", "type": "ai_languageModel", "index": 0 }]]
+    },
+    "SerpAPI Tool": {
+      "ai_tool": [[{ "node": "Research Agent", "type": "ai_tool", "index": 0 }]]
+    },
+    "Wikipedia Tool": {
+      "ai_tool": [[{ "node": "Research Agent", "type": "ai_tool", "index": 0 }]]
+    },
+    "HTTP Request Tool": {
+      "ai_tool": [[{ "node": "Research Agent", "type": "ai_tool", "index": 0 }]]
+    },
+    "Think Tool": {
+      "ai_tool": [[{ "node": "Research Agent", "type": "ai_tool", "index": 0 }]]
+    }
+  },
+  "settings": { "executionOrder": "v1" }
+}

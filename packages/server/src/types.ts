@@ -78,6 +78,7 @@ export type RunAgentInput = z.infer<typeof RunAgentInputSchema>;
 // AG-UI Events
 export interface BaseEvent {
   type: EventType;
+  timestamp?: string;
 }
 
 export interface RunStartedEvent extends BaseEvent {
@@ -90,12 +91,27 @@ export interface RunFinishedEvent extends BaseEvent {
   type: EventType.RUN_FINISHED;
   threadId: string;
   runId: string;
+  status?: 'success' | 'error';
 }
 
 export interface RunErrorEvent extends BaseEvent {
   type: EventType.RUN_ERROR;
   message: string;
   code?: string;
+}
+
+export interface StepStartedEvent extends BaseEvent {
+  type: EventType.STEP_STARTED;
+  stepId: string;
+  stepName: string;
+  stepType?: 'planning' | 'execution' | 'review' | 'revision' | string;
+}
+
+export interface StepFinishedEvent extends BaseEvent {
+  type: EventType.STEP_FINISHED;
+  stepId: string;
+  status: 'complete' | 'failed' | 'skipped';
+  result?: Record<string, unknown>;
 }
 
 export interface TextMessageStartEvent extends BaseEvent {
@@ -166,6 +182,8 @@ export type AGUIEvent =
   | RunStartedEvent
   | RunFinishedEvent
   | RunErrorEvent
+  | StepStartedEvent
+  | StepFinishedEvent
   | TextMessageStartEvent
   | TextMessageContentEvent
   | TextMessageEndEvent
@@ -178,20 +196,119 @@ export type AGUIEvent =
   | StateDeltaEvent
   | CustomEvent;
 
-// n8n specific types
+// n8n specific types for multi-agent orchestration
+export interface N8nPlanStep {
+  id: string;
+  description: string;
+  tool: string;
+  toolInput: string;
+  expectedOutput: string;
+  dependsOn: string[];
+}
+
+export interface N8nPlan {
+  goal: string;
+  complexity: 'low' | 'medium' | 'high';
+  steps: N8nPlanStep[];
+  successCriteria: string;
+}
+
+export interface N8nQCResult {
+  approved: boolean;
+  qualityScore: number;
+  issues: string[];
+  suggestions: string[];
+  requiresRevision: boolean;
+  revisionInstructions?: string;
+  finalSummary: string;
+}
+
+export interface N8nAgentEvent {
+  type: string;
+  runId?: string;
+  threadId?: string;
+  stepId?: string;
+  stepName?: string;
+  stepType?: string;
+  toolCallId?: string;
+  toolCallName?: string;
+  delta?: Array<{ op: string; path: string; value?: unknown }>;
+  result?: unknown;
+  status?: string;
+  timestamp?: string;
+}
+
+export interface N8nMultiAgentResponse {
+  output: string;
+  plan?: N8nPlan;
+  stepResults?: Array<{
+    stepId: string;
+    description: string;
+    tool: string;
+    result: string;
+    completedAt: string;
+  }>;
+  qcResult?: N8nQCResult;
+  qualityScore?: number;
+  iterations: number;
+  events: N8nAgentEvent[];
+  executionTime: number;
+}
+
 export interface N8nWebhookResponse {
   output?: string;
   text?: string;
   message?: string;
   response?: string;
   data?: unknown;
+  // Multi-agent fields
+  plan?: N8nPlan;
+  stepResults?: unknown[];
+  qcResult?: N8nQCResult;
+  events?: N8nAgentEvent[];
+  executionTime?: number;
+  iterations?: number;
 }
 
 export interface N8nStreamChunk {
-  type: 'text' | 'tool_call' | 'tool_result' | 'error' | 'done';
+  type: 'text' | 'tool_call' | 'tool_result' | 'error' | 'done' | 'event';
   content?: string;
   toolName?: string;
   toolArgs?: string;
   toolResult?: string;
   error?: string;
+  event?: N8nAgentEvent;
+}
+
+// Agent state for frontend synchronization
+export interface AgentState {
+  phase: 'planning' | 'executing' | 'reviewing' | 'revision' | 'complete' | 'error';
+  plan?: {
+    id: string;
+    goal: string;
+    steps: Array<{
+      id: string;
+      description: string;
+      status: 'pending' | 'active' | 'complete' | 'failed';
+      tool?: string;
+      result?: unknown;
+    }>;
+    currentStepIndex: number;
+  };
+  tools: {
+    active: Array<{
+      id: string;
+      name: string;
+      args: Record<string, unknown>;
+      startedAt: string;
+    }>;
+    completed: Array<{
+      id: string;
+      name: string;
+      result: unknown;
+      duration: number;
+    }>;
+  };
+  qualityScore?: number;
+  iterations: number;
 }
